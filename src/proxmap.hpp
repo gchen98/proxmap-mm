@@ -3,6 +3,12 @@
 #include<sstream>
 #include<cstdlib>
 #include<math.h>
+
+#ifdef USE_GPU
+#include<CL/cl.h>
+#include<CL/cl.hpp>
+#endif
+
 using namespace std;
 
 struct config_t{
@@ -22,6 +28,7 @@ struct config_t{
   float mu_max;  // penalty parameter
 
   bool use_gpu;
+  bool use_cpu;
   int platform_id;
   int device_id;
   string kernel_base;
@@ -68,5 +75,22 @@ protected:
 
   config_t * config;
   float rho,epsilon,rho_distance_ratio;
+  bool run_gpu;
+  bool run_cpu;
+#ifdef USE_GPU
+  virtual void init_opencl();
+  bool debug_opencl;
+  cl_int err;
+  cl::Context * context;
+  cl::CommandQueue * commandQueue;
+  cl::Program * program;
+  vector<cl::Device> devices;
+  void createKernel(const char * name, cl::Kernel * & kernel);
+  void runKernel(const char * name, cl::Kernel * & kernel,int wg_x,int wg_y, int wg_z, int wi_x,int wi_y, int wi_z);
+  template<class T> void createBuffer(int rw,int dim,const char * label,cl::Buffer * & buf);
+  template<typename T> void setArg(cl::Kernel * & kernel,int & index,T arg,const char * label);
+  template<typename T> void writeToBuffer(cl::Buffer * & buffer,int dim,T hostArr,const char * label);
+  template<typename T> void readFromBuffer(cl::Buffer * & buffer,int dim,T hostArr,const char * label);
+#endif
 private:
 };

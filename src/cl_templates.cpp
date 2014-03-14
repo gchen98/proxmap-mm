@@ -1,6 +1,7 @@
 #include<iostream>
 #include<fstream>
 #include"cl_constants.h"
+#include"proxmap.hpp"
 #ifdef USE_GPU
 #include"cl_templates.hpp"
 #endif
@@ -72,22 +73,22 @@ void clSafe (cl_int rc, string functionname) {
   }
 }
 
-//void cluster_t::createKernel(const char * name, cl::Kernel * & kernel){
-//  ostringstream oss;
-//  oss<<"Creating a kernel "<<name;
-//  string mesg = oss.str();
-//  if (debug_opencl)cerr<<mesg<<endl;
-//  kernel = new cl::Kernel(*program,name,&err);
-//  clSafe(err,oss.str().data());
-//}
-//
-//void cluster_t::runKernel(const char * name, cl::Kernel * & kernel,int wg_x,int wg_y, int wg_z, int wi_x,int wi_y, int wi_z){
-//  ostringstream oss;
-//  oss<<"Launching kernel "<<name;
-//  string mesg = oss.str();
-//  if (debug_opencl) cerr<<mesg<<endl;
-//  err = commandQueue->enqueueNDRangeKernel(*kernel,cl::NullRange,cl::NDRange(wg_x,wg_y,wg_z),cl::NDRange(wi_x,wi_y,wi_z),NULL,NULL);
-//  clSafe(err,oss.str().data());
-//}
-//
+void proxmap_t::createKernel(const char * name, cl::Kernel * & kernel){
+  ostringstream oss;
+  oss<<"Creating a kernel "<<name;
+  string mesg = oss.str();
+  if (debug_opencl)cerr<<mesg<<endl;
+  kernel = new cl::Kernel(*program,name,&err);
+  clSafe(err,oss.str().data());
+}
+
+void proxmap_t::runKernel(const char * name, cl::Kernel * & kernel,int wg_x,int wg_y, int wg_z, int wi_x,int wi_y, int wi_z){
+  ostringstream oss;
+  oss<<"Launching kernel "<<name;
+  string mesg = oss.str();
+  if (debug_opencl) cerr<<mesg<<endl;
+  err = commandQueue->enqueueNDRangeKernel(*kernel,cl::NullRange,cl::NDRange(wg_x,wg_y,wg_z),cl::NDRange(wi_x,wi_y,wi_z),NULL,NULL);
+  clSafe(err,oss.str().data());
+}
+
 #endif

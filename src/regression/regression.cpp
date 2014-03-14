@@ -182,6 +182,7 @@ void regression_t::allocate_memory(string config_file){
 }
 
 float regression_t::infer_rho(){
+  return 0;
 }
 
 void regression_t::initialize(float mu){

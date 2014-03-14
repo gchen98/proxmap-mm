@@ -3,7 +3,7 @@ include common.mk
 DIRS=convex_clustering regression
 SUB_OBJS=convex_clustering/*.o regression/*.o
 
-OBJS=proxmap.o cl_templates.o
+OBJS=proxmap.o proxmap_opencl.o cl_templates.o
 PROGRAM=../bin/proxmap
 
 proxmap::
@@ -14,6 +14,9 @@ proxmap:: $(OBJS)
 
 proxmap.o: proxmap.cpp proxmap.hpp cl_constants.h
 	$(CC) $(CFLAGS) $(PREPROC) -o proxmap.o -c $<
+
+proxmap_opencl.o: proxmap_opencl.cpp cl_templates.hpp cl_constants.h
+	$(CC) $(CFLAGS) $(PREPROC) -o proxmap_opencl.o -c $<
 
 cl_templates.o: cl_templates.cpp cl_templates.hpp cl_constants.h
 	$(CC) $(CFLAGS) $(PREPROC) -o cl_templates.o -c $<

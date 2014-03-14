@@ -23,6 +23,8 @@ void proxmap_t::init(string configfile){
 void proxmap_t::parse_config_line(string & token,istringstream & iss){
   if (token.compare("USE_GPU")==0){
     iss>>config->use_gpu;
+  }else if (token.compare("USE_CPU")==0){
+    iss>>config->use_cpu;
   }else if (token.compare("PLATFORM_ID")==0){
     iss>>config->platform_id;
   }else if (token.compare("DEVICE_ID")==0){
@@ -72,6 +74,8 @@ void proxmap_t::allocate_memory(string config_file){
     parse_config_line(token,iss);
   }
   ifs_config.close();
+  run_gpu = config->use_gpu;
+  run_cpu = config->use_cpu;
 
 }
 
@@ -152,13 +156,13 @@ void proxmap_t::run(){
   do{ // loop over mu
     cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<endl;
     rho_distance_ratio = config->rho_distance_ratio;
-    epsilon = epsilon_max;
+    epsilon = 0.01;
     initialize(mu);
     //rho = rho_min;
     int iter_rho_epsilon = 0;
     bool converged = false;
     float last_obj=1e10;
-    float last_rho = 0;
+    //float last_rho = 0;
     //bool move_rho = true;
     int burnin = 1;
     
@@ -192,7 +196,7 @@ void proxmap_t::run(){
       bool feasible = in_feasible_region();
       cerr<<"In feasible region?: "<<feasible<<endl;
       last_obj = obj;
-      last_rho = rho;
+      //last_rho = rho;
       ++iter_rho_epsilon;
     }
     print_output();
