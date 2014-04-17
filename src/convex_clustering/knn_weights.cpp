@@ -80,7 +80,7 @@ void store_distances(){
       distances[i*n+j]=-1;
     }
   }
-  bool debug = true;
+  bool debug = false;
   for(int i=0;i<n;++i){
     neighbor_set_t::iterator it3 = neighbor_set_arr[i].begin();
     if (debug)cerr<<"STORE_DIST: Index "<<i<<" with neighbors (index,dist):";
@@ -95,7 +95,7 @@ void store_distances(){
           distances[i*n+neighbor.index] = neighbor.dist; 
         }else{
           distances[neighbor.index*n+i] = neighbor.dist; 
-          cerr<<"REVERSE for "<<i<<" and "<<neighbor.index<<endl;
+          if (debug) cerr<<"REVERSE for "<<i<<" and "<<neighbor.index<<endl;
         }
         
         it3++;
@@ -119,12 +119,21 @@ void store_distances(){
 }
 
 void print_weights(){
+  bool debug = false;
+  float min_weight = 10;
+  float max_weight = 0;
   for(int i1=0;i1<n;++i1){
     for(int i2=0;i2<n;++i2){
       if (i2) cout<<" ";
       if (i2>i1 && distances[i1*n+i2]>=0){
         float kernel =  1./exp(phi*distances[i1*n+i2]);
-        cerr<<"DEBUG: Weight for "<<i1<<" to "<<i2<<" is "<<kernel<<endl;
+        if (kernel>max_weight) max_weight = kernel;
+        if (kernel<min_weight) min_weight = kernel;
+        if (debug) cerr<<"DEBUG: Weight for "<<i1<<" to "<<i2<<" is "<<kernel<<endl;
+        cout<<kernel;
+      }else if (i1>i2 && distances[i2*n+i1]>=0){
+        float kernel =  1./exp(phi*distances[i2*n+i1]);
+        //if (debug) cerr<<"DEBUG: Weight for "<<i1<<" to "<<i2<<" is "<<kernel<<endl;
         cout<<kernel;
       }else{
         cout<<"0";
@@ -132,6 +141,7 @@ void print_weights(){
     }
     cout<<endl;
   }
+  cerr<<"Weight range is "<<min_weight<<" to "<<max_weight<<endl;
 }
 
 int main(int argc,char * argv[]){

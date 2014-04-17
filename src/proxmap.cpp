@@ -151,12 +151,12 @@ void proxmap_t::run(){
   float mu_min = config->mu_min;
   float mu_increment = config->mu_increment;
   float mu_max = config->mu_max;
-  float mu = mu_min;
+  float mu = 0;
   int iter_mu = 0;
   do{ // loop over mu
     cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<endl;
     rho_distance_ratio = config->rho_distance_ratio;
-    epsilon = 0.01;
+    epsilon = 0.1;
     initialize(mu);
     //rho = rho_min;
     int iter_rho_epsilon = 0;
@@ -184,7 +184,7 @@ void proxmap_t::run(){
         if(last_obj<=obj){
           converged = true;
           cerr<<"Objective function is not changing or going uphill from "<<last_obj<<" to "<<obj<<", aborting.\n";
-        }else if(fabs(last_obj-obj)/last_obj<1e-6){
+        }else if(fabs(last_obj-obj)/last_obj<1e-3){
           converged=true; 
           cerr<<"Converged with last obj "<<last_obj<<" current "<<obj<<"!\n";
         }else{
@@ -201,9 +201,12 @@ void proxmap_t::run(){
     }
     print_output();
     //while(epsilon>epsilon_min || rho<rho_max);
+    //mu*=mu_increment;
     mu+=mu_increment;
+    finalize_iteration();
     ++iter_mu;
-  }while(mu<mu_max);
+    if (mu==0) mu = mu_min;
+  }while(mu<=mu_max);
 }
 
 float proxmap_t::get_prox_dist_penalty(){

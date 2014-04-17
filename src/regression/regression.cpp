@@ -189,6 +189,9 @@ void regression_t::initialize(float mu){
 }
 void regression_t::update_map_distance(){}
 
+void regression_t::finalize_iteration(){
+}
+
 void regression_t::iterate(){
   //for(int iter=0;iter<10;++iter){
     update_beta();

@@ -64,6 +64,7 @@ protected:
   virtual float evaluate_obj()= 0;
   virtual void print_output()=0;
   virtual void iterate()=0;
+  virtual void finalize_iteration()=0;
   virtual float infer_rho()=0;
 
   float get_prox_dist_penalty();

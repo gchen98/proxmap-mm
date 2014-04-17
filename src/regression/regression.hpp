@@ -9,6 +9,7 @@ private:
   void allocate_memory(string configfile);
   void parse_config_line(string & key, istringstream & iss);
   void iterate();
+  void finalize_iteration();
   float get_map_distance();
   void update_map_distance();
   float evaluate_obj();
