@@ -22,6 +22,8 @@ void cluster_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->geno_format;
   }else if (token.compare("GENO_ORDER")==0){
     iss>>config->geno_order;
+  }else if (token.compare("U_DELTA_RHO_CAP")==0){
+    iss>>config->u_delta_rho_cap;
   }
 }
 
@@ -53,6 +55,7 @@ void cluster_t::allocate_memory(string config_file){
   rawdata = new float[n*p];
   U  = new float[n*p];
   U_prev  = new float[n*p];
+  U_norm_diff = 0;
   U_project = new float[n*p];
   U_project_orig = new float[n*p];
   U_project_prev = new float[n*p];
@@ -85,8 +88,7 @@ void cluster_t::allocate_memory(string config_file){
   }
 }
 
-void cluster_t::initialize(float mu){
-  this->mu = mu;
+void cluster_t::initialize(){
   float transition_mu = config->mu_max/2;
   cerr<<"Transition mu for shifting weights is "<<transition_mu<<endl;
   if (mu==transition_mu){
@@ -110,7 +112,7 @@ void cluster_t::initialize(float mu){
       }
     }
     if (run_gpu){
-      initialize_gpu(mu);
+      initialize_gpu();
     }
     update_map_distance();
   }
@@ -176,7 +178,14 @@ void cluster_t::load_into_triangle(const char * filename,float * & mat,int rows,
 }
 
 float cluster_t::infer_rho(){
-  float new_rho = mu*dist_func*rho_distance_ratio;
+  float new_rho = 0;
+  if (mu>config->mu_min && U_norm_diff<config->u_delta_rho_cap){
+    new_rho = this->last_rho;
+    cerr<<"INFER_RHO: Norm diff U is "<<U_norm_diff<<" suspending rho increase. "<<endl;
+  }else{
+    new_rho = mu*dist_func*rho_distance_ratio;
+    cerr<<"INFER_RHO: Rho adjusted proportionally to mu\n";
+  }
   cerr<<"INFER_RHO: last rho was "<<this->rho<<" proposed rho is "<<new_rho<<endl;
   return new_rho;
 }
@@ -188,8 +197,10 @@ void cluster_t::init_v_project_coeff(){
   }
   if (run_cpu){
     //float small = 1e-10;
+    int nearcoals = 0;
+    int noncoals = 0;
+    int coals = 0;
     int zeros = 0;
-    int nonzeros = 0;
     for(int index1=0;index1<n-1;++index1){
       for(int index2=index1+1;index2<n;++index2){
         float & weight = weights[offsets[index1]+index2-index1];
@@ -197,7 +208,7 @@ void cluster_t::init_v_project_coeff(){
         if (weight == 0){
           // no shrinkage
           scaler = 1;
-          ++nonzeros;
+          ++zeros;
         }else{
           float l2norm_b = 0;
           for(int j=0;j<p;++j){
@@ -207,16 +218,16 @@ void cluster_t::init_v_project_coeff(){
           }
           if(l2norm_b==0){
             scaler = 1;
-            ++nonzeros;
+            ++coals;
           }else{
             l2norm_b = sqrt(l2norm_b);
             float lambda = mu * dist_func * weight / rho;
             if (lambda<l2norm_b){
               scaler = (1.-lambda/l2norm_b);
-              ++nonzeros;
+              ++noncoals;
             }else{
               scaler = 0;
-              ++zeros;
+              ++nearcoals;
             }
           }
         }
@@ -233,14 +244,7 @@ void cluster_t::init_v_project_coeff(){
       }
       //exit(0);
     }
-    if (nonzeros==0){
-      cerr<<"INIT_V_COEFF: WARNING: all cluster differences are shrunken to zero!\n";
-    }else if (zeros==0){
-      cerr<<"INIT_V_COEFF: WARNING: no cluster differences are shrunken to zero!\n";
-    }else{
-      cerr<<"INIT_V_COEFF: There are "<<nonzeros<<" non-zero and "<<zeros<<" zero coefficients for V\n";
-    }
-    //cerr<<"INIT_V_COEFF: Mean scaler: "<<(mean_scaler*1./counts)<<" with range ("<<min_scaler<<"-"<<max_scaler<<")"<<endl;
+    cerr<<"INIT_V_COEFF: There are "<<zeros<<" zero weights "<<coals<<" coals and "<<noncoals<<" noncoals and "<<nearcoals<<" near coals.\n";
   }
 }
 
@@ -589,27 +593,24 @@ void cluster_t::update_u(){
   update_map_distance();
 }
 
+
 void cluster_t::print_output(){
-  if (run_gpu){
-    get_U_gpu();
-  }
+  bool complete = false;
   bool print = false;
+  cerr<<"PRINT_OUTPUT mu = "<<mu<<" last current "<<last_vnorm<<","<<current_vnorm<<endl;
   if (mu==0 || mu>=config->mu_max){
     print = true;
+    last_vnorm = 1e10;
   }else{
-    float norm_diff = 0;
-    for(int i=0;i<n;++i){
-      for(int j=0;j<p;++j){
-        float dev = (U[i*p+j]-U_prev[i*p+j]);
-        norm_diff+=dev*dev;
-      }
+    if (last_vnorm-current_vnorm>.01){
+      print = true;
+      last_vnorm = current_vnorm;
     }
-    norm_diff=sqrt(norm_diff);
-    cerr<<"Norm diff for print is "<<norm_diff<<endl;
-    print = (current_vnorm<last_vnorm);
-    //print = (norm_diff>.001) && (current_vnorm<last_vnorm);
   }
   if(print){
+    if (run_gpu){
+      get_U_gpu();
+    }
     ostringstream oss;
     oss<<print_index<<"_rho"<<rho<<".epsilon"<<epsilon<<".mu"<<mu<<".clusters.txt";
     string filename=oss.str();
@@ -643,11 +644,6 @@ void cluster_t::print_output(){
     }
     ofs.close();
     ++print_index;
-  }
-  for(int i=0;i<n;++i){
-    for(int j=0;j<p;++j){
-      U_prev[i*p+j] = U[i*p+j];
-    }
   }
 }
 
@@ -733,8 +729,6 @@ bool cluster_t::in_feasible_region(){
 
 void cluster_t::iterate(){
   update_projection(); 
-  //evaluate_obj();
-  //update_projection_nonzero(); 
   update_u();
 }
 
@@ -829,7 +823,7 @@ float cluster_t::evaluate_obj(){
       }
       //exit(1);
     }
-  } // run CPU
+  } // end run CPU
   float norm1 = 0;
   float norm2 = 0;
   for(int i=0;i<n;++i){
@@ -845,8 +839,27 @@ float cluster_t::evaluate_obj(){
   return obj;
 }   
 
-void cluster_t::finalize_iteration(){
-  last_vnorm = current_vnorm;
+bool cluster_t::finalize_iteration(){
+  if(run_gpu){
+    finalize_iteration_gpu();
+  }
+  if(run_cpu){
+    U_norm_diff = 0;
+    for(int i=0;i<n;++i){
+      for(int j=0;j<p;++j){
+        float dev = (U[i*p+j]-U_prev[i*p+j]);
+        U_norm_diff+=dev*dev;
+      }
+    }
+    U_norm_diff=sqrt(U_norm_diff);
+    cerr<<"FINALIZE_ITERATION: CPU U_norm_diff: "<<U_norm_diff<<endl;
+    for(int i=0;i<n;++i){
+      for(int j=0;j<p;++j){
+        U_prev[i*p+j] = U[i*p+j];
+      }
+    }
+  }
+  return (mu<=config->mu_min || fabs(current_vnorm-0)>.0001);
 }
 
 int main_cluster(int argc,char * argv[]){

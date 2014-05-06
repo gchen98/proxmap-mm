@@ -20,9 +20,11 @@ void cluster_t::init_opencl(){
     createKernel("store_U_project_prev",kernel_store_U_project_prev);
     createKernel("iterate_projection",kernel_iterate_projection);
     createKernel("evaluate_obj",kernel_evaluate_obj);
+    createKernel("get_U_norm_diff",kernel_get_U_norm_diff);
     cerr<<"Kernels created\n";
     // CREATE BUFFERS
     createBuffer<float>(CL_MEM_READ_WRITE,n*p,"buffer_U",buffer_U);
+    createBuffer<float>(CL_MEM_READ_WRITE,n*p,"buffer_U_prev",buffer_U_prev);
     createBuffer<float>(CL_MEM_READ_WRITE,n*p,"buffer_U_project",buffer_U_project);
     createBuffer<float>(CL_MEM_READ_WRITE,n*p,"buffer_U_project_orig",buffer_U_project_orig);
     createBuffer<float>(CL_MEM_READ_WRITE,n*p,"buffer_U_project_prev",buffer_U_project_prev);
@@ -121,6 +123,14 @@ void cluster_t::init_opencl(){
     setArg(kernel_evaluate_obj,arg,*buffer_n2_norms,"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,cl::__local(sizeof(float)*BLOCK_WIDTH),"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,cl::__local(sizeof(float)*BLOCK_WIDTH),"kernel_evaluate_obj");
+    arg = 0; 
+    setArg(kernel_get_U_norm_diff,arg,n,"kernel_get_U_norm_diff");
+    setArg(kernel_get_U_norm_diff,arg,p,"kernel_get_U_norm_diff");
+    setArg(kernel_get_U_norm_diff,arg,variable_blocks,"kernel_get_U_norm_diff");
+    setArg(kernel_get_U_norm_diff,arg,*buffer_U,"kernel_get_U_norm_diff");
+    setArg(kernel_get_U_norm_diff,arg,*buffer_U_prev,"kernel_get_U_norm_diff");
+    setArg(kernel_get_U_norm_diff,arg,*buffer_n_norms,"kernel_get_U_norm_diff");
+    setArg(kernel_get_U_norm_diff,arg,cl::__local(sizeof(float)*BLOCK_WIDTH),"kernel_get_U_norm_diff");
     //setArg(kernel_reduce_weights2,arg,g_people,"kernel_reduce_weights2");
     //kernelWorkGroupSize = kernel_reduce_weights2->getWorkGroupInfo<CL_KERNEL_WORK_GROUP_SIZE>(devices[0], &err);
     //clSafe(err,"get workgroup size kernel reduce_weights2");
@@ -184,7 +194,7 @@ void cluster_t::get_U_gpu(){
 #endif
 }
 
-void cluster_t::initialize_gpu(float mu){
+void cluster_t::initialize_gpu(){
 #ifdef USE_GPU
   int x_dim = BLOCK_WIDTH * variable_blocks;
   runKernel("init_U",kernel_init_U,x_dim,n,1,BLOCK_WIDTH,1,1);
@@ -304,6 +314,22 @@ void cluster_t::evaluate_obj_gpu(){
       cerr<<endl;
     }
   }
+#endif
+}
+
+
+void cluster_t::finalize_iteration_gpu(){
+#ifdef USE_GPU
+  int x_dim = BLOCK_WIDTH * n;
+  runKernel("get_U_norm_diff",kernel_get_U_norm_diff,x_dim,1,1,BLOCK_WIDTH,1,1);
+  readFromBuffer(buffer_n_norms,n,norm1_arr,"buffer_n_norms");
+  float gpu_U_norm_diff = 0;
+  for(int i=0;i<n;++i){
+    gpu_U_norm_diff+=norm1_arr[i];
+  }
+  U_norm_diff = sqrt(gpu_U_norm_diff);
+
+  cerr<<"FINALIZE_ITERATION: GPU U_norm_diff: "<<U_norm_diff<<endl;
 #endif
 }
 

@@ -22,7 +22,8 @@ private:
   void init_opencl();
   void parse_config_line(string & key, istringstream & iss);
   void iterate();
-  void finalize_iteration();
+  bool finalize_iteration();
+  void finalize_iteration_gpu();
   float get_map_distance();
   float evaluate_obj();
   void evaluate_obj_gpu();
@@ -46,12 +47,14 @@ private:
   cl::Kernel * kernel_init_v_project_coeff;
   cl::Kernel * kernel_iterate_projection;
   cl::Kernel * kernel_evaluate_obj;
+  cl::Kernel * kernel_get_U_norm_diff;
   cl::Buffer * buffer_n_norms;
   cl::Buffer * buffer_n2_norms;
   cl::Buffer * buffer_dist_func;
   cl::Buffer * buffer_rho;
   cl::Buffer * buffer_unweighted_lambda;
   cl::Buffer * buffer_U;
+  cl::Buffer * buffer_U_prev;
   cl::Buffer * buffer_U_project;
   cl::Buffer * buffer_U_project_orig;
   cl::Buffer * buffer_U_project_prev;
@@ -66,12 +69,11 @@ private:
   int variable_blocks;
   int print_index;
   bool coeff_defined;
-  float map_distance;
-  float dist_func;
   float large;
   float * sub_fnorm;
   float * U;
   float * U_prev;
+  float U_norm_diff;
   float * U_project;
   float * U_project_orig;
   float * U_project_prev;
@@ -81,14 +83,13 @@ private:
   int * offsets;
   float * norm1_arr;
   float * norm2_arr;
-  float mu;
   int n,n2,p;
   int iter;
   float current_vnorm,last_vnorm;
   int triangle_dim;
 
-  void initialize(float mu);
-  void initialize_gpu(float mu);
+  void initialize();
+  void initialize_gpu();
   void load_into_triangle(const char * filename,float * & mat,int rows, int cols);
 
   float infer_rho();
@@ -105,5 +106,6 @@ private:
   void update_u();
   void update_u_gpu();
   void check_constraint();
+  
   
 };

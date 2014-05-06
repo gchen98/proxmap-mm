@@ -10,6 +10,7 @@
 using namespace std;
 
 float * distances;
+const float MIN_WEIGHT = .01;
 int n,p,k;
 float phi;
 
@@ -127,6 +128,7 @@ void print_weights(){
       if (i2) cout<<" ";
       if (i2>i1 && distances[i1*n+i2]>=0){
         float kernel =  1./exp(phi*distances[i1*n+i2]);
+        if (kernel>0 && kernel<MIN_WEIGHT) kernel = MIN_WEIGHT;
         if (kernel>max_weight) max_weight = kernel;
         if (kernel<min_weight) min_weight = kernel;
         if (debug) cerr<<"DEBUG: Weight for "<<i1<<" to "<<i2<<" is "<<kernel<<endl;

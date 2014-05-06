@@ -25,6 +25,7 @@ struct config_t{
 
   float mu_min;  // penalty parameter
   float mu_increment;  // penalty parameter
+  string mu_incrementer; // geometric/additive
   float mu_max;  // penalty parameter
 
   bool use_gpu;
@@ -38,11 +39,14 @@ struct config_t{
   string late_weightsfile;
   int datapoints;
   int variables;
+  float u_delta_rho_cap;
   string geno_format;
   string geno_order;
   // regression settings
   string traitfile;
+  string taskfile;
   float nu;  // penalty parameter
+  int top_k;
 };
 
 
@@ -57,14 +61,14 @@ protected:
   virtual void allocate_memory(string configfile);
   virtual void parse_config_line(string & key, istringstream & iss);
   // proximal distance functions
-  virtual void initialize(float mu)=0;
+  virtual void initialize()=0;
   virtual float get_map_distance()= 0;
   virtual void update_map_distance()= 0;
   virtual bool in_feasible_region()=0;
   virtual float evaluate_obj()= 0;
   virtual void print_output()=0;
   virtual void iterate()=0;
-  virtual void finalize_iteration()=0;
+  virtual bool finalize_iteration()=0;
   virtual float infer_rho()=0;
 
   float get_prox_dist_penalty();
@@ -75,7 +79,10 @@ protected:
 
 
   config_t * config;
-  float rho,epsilon,rho_distance_ratio;
+  float last_rho,rho,epsilon,rho_distance_ratio;
+  float map_distance;
+  float dist_func;
+  float mu;
   bool run_gpu;
   bool run_cpu;
 #ifdef USE_GPU

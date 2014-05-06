@@ -55,6 +55,14 @@ void proxmap_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->mu_min;
   }else if (token.compare("MU_INCREMENT")==0){
     iss>>config->mu_increment;
+  }else if (token.compare("MU_INCREMENTER")==0){
+    iss>>config->mu_incrementer;
+    if (config->mu_incrementer.compare("geometric")==0||config->mu_incrementer.compare("geometric")==0){
+      //we're OK
+      cerr<<"Using an incrementer style of "<<config->mu_incrementer<<endl;
+    }else{
+      cerr<<"Incrementer style of "<<config->mu_incrementer<<" invalid.  Use 'geometric' or 'additive'"<<endl;
+    }
   }else if (token.compare("MU_MAX")==0){
     iss>>config->mu_max;
   }
@@ -140,7 +148,7 @@ void proxmap_t::mmultiply(float *  a,int a_rows, int a_cols, float *  b,int b_co
 }
 
 void proxmap_t::run(){
-  float epsilon_max = config->epsilon_max;
+  //float epsilon_max = config->epsilon_max;
   //float epsilon_scaler_fast = config->epsilon_scale_fast;
   //float epsilon_scaler_slow = config->epsilon_scale_slow;
   //float epsilon_min = config->epsilon_min;
@@ -151,32 +159,22 @@ void proxmap_t::run(){
   float mu_min = config->mu_min;
   float mu_increment = config->mu_increment;
   float mu_max = config->mu_max;
-  float mu = 0;
   int iter_mu = 0;
   do{ // loop over mu
     cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<endl;
     rho_distance_ratio = config->rho_distance_ratio;
     epsilon = 0.1;
-    initialize(mu);
+    initialize();
     //rho = rho_min;
     int iter_rho_epsilon = 0;
     bool converged = false;
     float last_obj=1e10;
-    //float last_rho = 0;
-    //bool move_rho = true;
     int burnin = 1;
     
     int max_iter = 1000;
     while(!converged && iter_rho_epsilon<max_iter){
       cerr<<"Inner iterate: "<<iter_rho_epsilon<<endl;
       rho = infer_rho();
-      //if (iter_rho_epsilon>0) rho = last_rho;
-      //if (rho<last_rho) {
-        //rho = last_rho;
-        //cerr<<"Backtracking to previous rho of "<<rho<<endl;
-      //}
-      //if (rho>rho_max) rho = rho_max;
-      //if (epsilon<epsilon_min) epsilon = epsilon_min;
       cerr<<" New rho="<<rho<<", epsilon="<<epsilon<<endl;
       iterate();
       float obj = evaluate_obj();
@@ -196,16 +194,20 @@ void proxmap_t::run(){
       bool feasible = in_feasible_region();
       cerr<<"In feasible region?: "<<feasible<<endl;
       last_obj = obj;
-      //last_rho = rho;
+      last_rho = rho;
       ++iter_rho_epsilon;
     }
+    if(!finalize_iteration()) mu = mu_max;
     print_output();
-    //while(epsilon>epsilon_min || rho<rho_max);
-    //mu*=mu_increment;
-    mu+=mu_increment;
-    finalize_iteration();
-    ++iter_mu;
     if (mu==0) mu = mu_min;
+    else {
+      if(config->mu_incrementer.compare("additive")==0){
+        mu+=mu_increment;
+      }else if(config->mu_incrementer.compare("geometric")==0){
+        mu*=mu_increment;
+      }
+    }
+    ++iter_mu;
   }while(mu<=mu_max);
 }
 

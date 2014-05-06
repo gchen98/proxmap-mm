@@ -320,3 +320,38 @@ __local float * local_norm1
   return;
 }
 
+__kernel void get_U_norm_diff(
+__const int n,
+__const int p,
+__const int variable_blocks,
+__global float * U,
+__global float * U_prev,
+__global float * n_norms,
+__local float * local_norm1
+){
+  int threadindex = get_local_id(0);
+  int i = get_group_id(0);
+  local_norm1[threadindex] = 0;
+  barrier(CLK_LOCAL_MEM_FENCE);  
+  for(int block = 0;block<variable_blocks;++block){
+    int j = block*BLOCK_WIDTH+threadindex;
+    if(j<p){
+      float dev = U[i*p+j]-U_prev[i*p+j];
+      local_norm1[threadindex]+=dev*dev;
+      barrier(CLK_LOCAL_MEM_FENCE);  
+      U_prev[i*p+j] = U[i*p+j];
+      //barrier(CLK_LOCAL_MEM_FENCE);  
+    }
+  }
+  for(int s=BLOCK_WIDTH/2; s>0; s>>=1) {
+    if (threadindex<s) {
+      local_norm1[threadindex]+=local_norm1[threadindex+s];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  if(threadindex==0){
+    //n_norms[i] = 1;
+    n_norms[i] = local_norm1[0];
+  }
+  return;
+}
