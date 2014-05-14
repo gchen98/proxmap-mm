@@ -1,5 +1,5 @@
-use_mpi=0
-use_gpu=1
+use_mpi=1
+use_gpu=0
 
 #compiler
 CC=g++
@@ -9,11 +9,12 @@ ATI=$(HOME)/software/ati-stream-sdk-v2.2-lnx64
 BOOST_INC_FLAGS = -I/usr/include/boost
 BOOST_LIB_FLAGS = -L/usr/lib64
 GSL_LIB_FLAGS = -lgsl -lgslcblas
+MPI_LIB_FLAGS = -L/usr/lib64/openmpi/lib
 OPENCL_INC_FLAGS = -I$(ATI)/include
 OPENCL_LIB_FLAGS = -L$(ATI)/lib/x86_64 -lOpenCL
 
-CFLAGS = -Wall -g $(BOOST_INC_FLAGS) $(GSL_INC_FLAGS) $(OPENCL_INC_FLAGS)
-LINKFLAGS = -g -lm $(BOOST_LIB_FLAGS) $(GSL_LIB_FLAGS) $(OPENCL_LIB_FLAGS)
+CFLAGS = -Wall -g $(BOOST_INC_FLAGS) $(GSL_INC_FLAGS) 
+LINKFLAGS = -g -lm $(BOOST_LIB_FLAGS) $(GSL_LIB_FLAGS)
 
 
 ifeq ($(use_gpu),1)
@@ -25,6 +26,7 @@ endif
 ifeq ($(use_mpi),1)
 	PREPROC+= -DUSE_MPI
 	CC=mpic++
+	LINKFLAGS+= $(MPI_LIB_FLAGS)
 	LINKER=mpic++
 endif
 

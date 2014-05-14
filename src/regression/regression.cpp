@@ -39,6 +39,7 @@ regression_t::regression_t(){
 regression_t::~regression_t(){
 #ifdef USE_MPI
   MPI::Finalize();
+  ofs_debug.close();
 #endif
 }
 
@@ -58,7 +59,7 @@ void regression_t::project_beta(){
     for(int j=0;j<variables;++j){
       beta_project[j] = beta[j]-xt_lambda[j];
       //beta[j] = slave_id*variables+j;
-      if (slave_id==0) cerr<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
+      if (slave_id==0) ofs_debug<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
     }
   }
 }
@@ -67,7 +68,7 @@ void regression_t::project_theta(){
   if(slave_id>=0){
     for(int i=0;i<observations;++i){
       theta_project[i] = theta[i]+lambda[i];
-      if (slave_id==0) cerr<<"PROJECT_THETA: Subject "<<i<<" is "<<theta_project[i]<<endl;
+      if (slave_id==0) ofs_debug<<"PROJECT_THETA: Subject "<<i<<" is "<<theta_project[i]<<endl;
     }
   }
 }
@@ -98,18 +99,25 @@ void regression_t::update_theta(){
     float coeff = 1./(slaves+dist_func);
     for(int i=0;i<observations;++i){
       theta[i] = theta_project[i]+coeff*(y[i]-theta_project_reduce[i]);
-      if(slave_id==0)cerr<<"UPDATE_THETA: coeff: "<<coeff<<" theta["<<i<<"]:" <<theta[i]<<endl;
+      ofs_debug<<"UPDATE_THETA: coeff: "<<coeff<<" theta["<<i<<"]:" <<theta[i]<<endl;
     }
+  }
+  float theta_reduce[observations];
+  if (mpi_rank==0) for(int i=0;i<observations;++i) theta[i] = 0;
+  MPI_Reduce(theta,theta_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
+  if (mpi_rank==0) for(int i=0;i<observations;++i) {
+    theta[i] = theta_reduce[i];
+    ofs_debug<<"UPDATE_THETA for i: "<<theta[i]<<endl;
   }
 #endif
   
 
 //  float d2 = get_map_distance();
 //  w = rho/sqrt(d2+epsilon);
-//  //cerr<<"D2 is "<<d2<<" w is "<<w<<endl;
+//  //ofs_debug<<"D2 is "<<d2<<" w is "<<w<<endl;
 //  for(int i=0;i<observations;++i){
 //    theta[i] = theta[i] + y[i]/(blocks+w) - theta[i]/(blocks+w);
-//    //if (i<5) cerr<<"Subject "<<i<<" theta is "<<theta[i]<<endl;
+//    //if (i<5) ofs_debug<<"Subject "<<i<<" theta is "<<theta[i]<<endl;
 //  }
 }
 
@@ -118,6 +126,7 @@ void regression_t::update_beta(){
   if(mpi_rank==0){
     for(int j=0;j<variables;++j){
       //constrained_beta[j] = j;
+      //ofs_debug<<"UPDATE_BETA for "<<j<<" constrained: "<<constrained_beta[j]<<" and final "<<beta[j]<<endl;
     }
   }
   MPI_Scatterv(constrained_beta,node_sizes,node_offsets,MPI_FLOAT,constrained_beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -125,13 +134,16 @@ void regression_t::update_beta(){
   if(slave_id>=0){
     for(int j=0;j<variables;++j){
       beta[j] = .5*(beta_project[j]+constrained_beta[j]);
-      if(slave_id==0)cerr<<"UPDATE_BETA for "<<j<<" is project "<<beta_project[j]<<" constrained "<<constrained_beta[j]<<" and final "<<beta[j]<<endl;
+      ofs_debug<<"UPDATE_BETA for "<<j<<" is project "<<beta_project[j]<<" constrained "<<constrained_beta[j]<<" and final "<<beta[j]<<endl;
     }
   }else{
-    for(int j=0;j<variables;++j){
-     cerr<<"UPDATE_BETA debug constraint for "<<j<<":"<<constrained_beta[j]<<endl;
-    }
     
+  }
+  MPI_Gatherv(beta,variables,MPI_FLOAT,beta,node_sizes,node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+  if(mpi_rank==0){
+    for(int j=0;j<variables;++j){
+     ofs_debug<<"UPDATE_BETA for "<<j<<": constrained="<<constrained_beta[j]<<" beta="<<beta[j]<<endl;
+    }
   }
 #endif
   //  if (w==0) w = .0001;
@@ -139,13 +151,13 @@ void regression_t::update_beta(){
 //    float shrinkage = 1.-(nu[j]/w/fabs(beta_project[j]));
 //    if (shrinkage<0 || beta_project[j]==0) shrinkage = 0;
 //    beta[j] = shrinkage*beta_project[j];
-//    //if(j<3) cerr<<"shrinkage "<<shrinkage<<". Beta for var "<<j<<" is "<<beta[j]<<endl;
+//    //if(j<3) ofs_debug<<"shrinkage "<<shrinkage<<". Beta for var "<<j<<" is "<<beta[j]<<endl;
  // }
 }
 
 void regression_t::update_lambda(){
   if(slave_id>=0){
-    cerr<<"Updating lambda\n";
+    ofs_debug<<"Updating lambda\n";
     update_Xbeta();
     float xbetatheta[observations];
     for(int i=0;i<observations;++i){
@@ -160,7 +172,7 @@ void regression_t::update_lambda(){
   //  for(int i=0;i<observations;++i){
   //    gradient[i] += theta[i] - Xbeta[i];
   //    lambda[i]-=gradient[i]/L;
-  //    //if (i<3) cerr<<"Gradient/Lambda "<<i<<" is "<<gradient[i]<<"/"<<lambda[i]<<endl;
+  //    //if (i<3) ofs_debug<<"Gradient/Lambda "<<i<<" is "<<gradient[i]<<"/"<<lambda[i]<<endl;
   //  }  
  // }
 }
@@ -171,7 +183,7 @@ void regression_t::loss(){
     l+=(y[i]-Xbeta[i])*(y[i]-Xbeta[i]);
   }
   l*=.5;
-  //cerr<<"Loss is "<<l<<endl;
+  //ofs_debug<<"Loss is "<<l<<endl;
 }
 
 void regression_t::check_constraints(){
@@ -181,14 +193,14 @@ bool regression_t::in_feasible_region(){
   return true;
   float norm = 0;
   int normalizer = 0;
-  cerr<<"Constraint check:\n";
+  ofs_debug<<"Constraint check:\n";
   for(int i=0;i<observations;++i){
-    if (i<10) cerr<<i<<": theta: "<<theta[i]<<" Xbeta: "<<Xbeta[i]<<endl;
+    if (i<10) ofs_debug<<i<<": theta: "<<theta[i]<<" Xbeta: "<<Xbeta[i]<<endl;
     norm+=(theta[i]-Xbeta[i])*(theta[i]-Xbeta[i]);
     ++normalizer;
   }
   norm/=1.*normalizer;
-  cerr<<"Feasibility: Normalized diff: "<<norm<<endl;
+  ofs_debug<<"Feasibility: Normalized diff: "<<norm<<endl;
   return norm<1e-4;
 }
 
@@ -196,8 +208,6 @@ void regression_t::parse_config_line(string & token,istringstream & iss){
   proxmap_t::parse_config_line(token,iss);
   if (token.compare("TRAIT")==0){
     iss>>config->traitfile;
-  }else if (token.compare("NU")==0){
-    iss>>config->nu;
   }else if (token.compare("TASKFILE")==0){
     iss>>config->taskfile;
   }else if (token.compare("TOP_K")==0){
@@ -252,7 +262,7 @@ void regression_t::read_dataset(){
   const char * phenofile = config->traitfile.data();
   this->observations = linecount(phenofile);
   int variables = colcount(genofile);
-  cerr<<"Subjects: "<<observations<<" and predictors: "<<variables<<endl;
+  ofs_debug<<"Subjects: "<<observations<<" and predictors: "<<variables<<endl;
   // taken from Eric Chi's project
   bool single_mask[] = {true};
   bool subject_mask[observations];
@@ -276,7 +286,7 @@ void regression_t::read_dataset(){
       indices_vec.push_back(indices);
     }
     if (indices_vec.size()!=slaves){
-      cerr<<"There are "<<slaves<<" slaves, but only "<<indices_vec.size()<<
+      ofs_debug<<"There are "<<slaves<<" slaves, but only "<<indices_vec.size()<<
       " rows in the task file "<<config->taskfile<<
       ".  Be sure that the number of rows match the number of slaves.\n";
       MPI_Finalize();
@@ -284,7 +294,7 @@ void regression_t::read_dataset(){
     }
     ifs_task.close();
   }else{
-    cerr<<"Slave task file "<<config->taskfile<<
+    ofs_debug<<"Slave task file "<<config->taskfile<<
     " not found.  Using default of equal sized chunks.\n";
     // this section divides the variables into equal sized blocks that
     // are each handled by a MPI slave
@@ -296,10 +306,10 @@ void regression_t::read_dataset(){
       vector<int> indices;
       uint total_variables = (j<slaves-1)?variables_per_slave:
       (variables-(slaves-1)*variables_per_slave);
-      //cerr<<"Total variables for slave "<<j<<" is "<<total_variables<<endl;  
+      //ofs_debug<<"Total variables for slave "<<j<<" is "<<total_variables<<endl;  
       for(uint k=0;k<total_variables;++k){
         indices.push_back(i);
-        //if(debug && slave_id==j) cerr<<"Slave "<<j<<" fitting index "<<i<<endl;
+        //if(debug && slave_id==j) ofs_debug<<"Slave "<<j<<" fitting index "<<i<<endl;
         ++i;
       }
       indices_vec.push_back(indices);
@@ -330,7 +340,7 @@ void regression_t::read_dataset(){
   // master and slaves share same number of observations
   load_matrix_data(config->traitfile.data(),y,observations,1,observations,1,subject_mask, single_mask,true,0);
   this->variables=slave_id>=0?slave_variables:variables;
-  cerr<<"Node "<<mpi_rank<<" with "<<this->variables<<" variables.\n";
+  ofs_debug<<"Node "<<mpi_rank<<" with "<<this->variables<<" variables.\n";
   load_matrix_data(genofile,X,observations,variables,observations,slave_variables, subject_mask,variable_mask,true,0);
   // Also, set up X transpose too, a constant matrix variable
   this->XT = new float[this->variables*observations];
@@ -366,7 +376,7 @@ void regression_t::init_xxi_inv(){
     oss_xxi_inv<<"xxi_inv."<<mpi_rank<<".txt";
     ifstream ifs_xxi_inv(oss_xxi_inv.str().data());
     if (ifs_xxi_inv.is_open()){
-      cerr<<"Using cached copy of singular values and vectors\n";
+      ofs_debug<<"Using cached copy of singular values and vectors\n";
       string line;
       for(int i=0;i<observations;++i){
         getline(ifs_xxi_inv,line);
@@ -380,22 +390,22 @@ void regression_t::init_xxi_inv(){
       //int rc = 0;
       //float * singular_vectors = new float[observations*observations];
       //float * singular_values = new float[observations];
-      cerr<<"Cannot find cached copy of singular values and vectors. Computing\n";
+      ofs_debug<<"Cannot find cached copy of singular values and vectors. Computing\n";
       gsl_matrix * tempx = gsl_matrix_alloc(observations,this->variables);
       gsl_matrix * tempxx = gsl_matrix_alloc(observations,observations);
-      cerr<<"Copying into gsl matrix\n";
+      ofs_debug<<"Copying into gsl matrix\n";
       for(int i=0;i<observations;++i){
         for(int j=0;j<this->variables;++j){
           gsl_matrix_set(tempx,i,j,X[i*this->variables+j]);
         }
       }
-      cerr<<"Computing X%*%X^T\n"; 
+      ofs_debug<<"Computing X%*%X^T\n"; 
       gsl_blas_dgemm(CblasNoTrans,CblasTrans,1,tempx,tempx,0,tempxx);
       gsl_matrix_free(tempx);
       gsl_matrix * tempv = gsl_matrix_alloc(observations,observations);
       gsl_vector * temps = gsl_vector_alloc(observations);
       gsl_vector * work  = gsl_vector_alloc(observations);
-      cerr<<"Performing SVD\n";
+      ofs_debug<<"Performing SVD\n";
       gsl_linalg_SV_decomp(tempxx,tempv,temps,work);
       gsl_matrix_free(tempxx);
       gsl_vector_free(work);
@@ -415,7 +425,8 @@ void regression_t::init_xxi_inv(){
       for(int i=0;i<observations;++i){
         for(int j=0;j<observations;++j){
           if (j) ofs_xxi_inv<<"\t";
-          ofs_xxi_inv<<gsl_matrix_get(tempvdiv,i,j);
+          XXI_inv[i*observations+j] = gsl_matrix_get(tempvdiv,i,j);
+          ofs_xxi_inv<<XXI_inv[i*observations+j];
         }
         ofs_xxi_inv<<endl;
       }
@@ -431,10 +442,18 @@ void regression_t::allocate_memory(string config_file){
   this->slaves = mpi_numtasks-1;
   this->mpi_rank = MPI::COMM_WORLD.Get_rank();
   this->slave_id = mpi_rank-1;
+  ostringstream oss_debugfile;
+  oss_debugfile<<"debug.rank."<<mpi_rank;
+  ofs_debug.open(oss_debugfile.str().data());
+  if (ofs_debug.is_open()){
+    cerr<<"Successfully opened debug file\n";
+  }else{
+    cerr<<"Could not open debug file\n";
+  }
   // initialize MPI data structures
   this->node_sizes = new int[mpi_numtasks];
   this->node_offsets = new int[mpi_numtasks];
-  cerr<<"Initialized MPI with "<<slaves<<" slaves.  I am slave "<<slave_id<<endl;
+  ofs_debug<<"Initialized MPI with "<<slaves<<" slaves.  I am slave "<<slave_id<<endl;
   read_dataset();
 
   // ALLOCATE MEMORY FOR ESTIMATED PARAMETERS
@@ -498,7 +517,7 @@ void regression_t::allocate_memory(string config_file){
 //  for(int i=0;i<observations;++i) if (row_sums[i]>maxr)maxr = row_sums[i];
 //  for(int j=0;j<variables;++j) if (col_sums[j]>maxc)maxc = col_sums[j];
 //  L = 1 + maxr*maxc ;
-//  cerr<<"Max rowsum, colsum, and L: "<<maxr<<","<<maxc<<","<<L<<endl;
+//  ofs_debug<<"Max rowsum, colsum, and L: "<<maxr<<","<<maxc<<","<<L<<endl;
 //  for(int i1=0;i1<observations;++i1){
 //    for(int i2=0;i2<observations;++i2){
 //      XXTI[i1*observations+i2] = (i1==i2)? XXT[i1*observations+i2]+1:XXT[i1*observations+i2];
@@ -507,17 +526,26 @@ void regression_t::allocate_memory(string config_file){
 }
 
 float regression_t::infer_rho(){
-  return 10;
+  float scaler = this->mu * config->rho_distance_ratio;
+  float new_rho;
+  if (mpi_rank==0){
+    new_rho = scaler * this->slaves * sqrt(this->map_distance+epsilon);
+  }
+  MPI_Bcast(&new_rho,1,MPI_FLOAT,0,MPI_COMM_WORLD);
+  ofs_debug<<"INFER_RHO: mu: "<<this->mu<<" new rho: "<<new_rho<<endl;
+  return new_rho;
 }
 
 void regression_t::initialize(){
-  this->top_k = config->top_k;
-  for(int i=0;i<this->observations;++i){
-    Xbeta[i] = 0;
-    theta[i] = 0;
-  }
-  for(int j=0;j<this->variables;++j){
-    beta[j] = 0;
+  if (this->mu == config->mu_min){
+    this->top_k = config->top_k;
+    for(int i=0;i<this->observations;++i){
+      Xbeta[i] = 0;
+      theta[i] = 0;
+    }
+    for(int j=0;j<this->variables;++j){
+      beta[j] = 0;
+    }
   }
 }
 void regression_t::update_map_distance(){
@@ -538,6 +566,7 @@ void regression_t::update_map_distance(){
   MPI_Reduce(&beta_distance,&beta_distance_reduce,1,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
   MPI_Reduce(&theta_distance,&theta_distance_reduce,1,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
   MPI_Gatherv(beta,variables,MPI_FLOAT,beta,node_sizes,node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+  ofs_debug<<"UPDATE_MAP_DISTANCE: sorting constrained beta\n";
   if(mpi_rank==0){
     multiset<beta_t,byValDesc> sorted_beta;
     for(int j=0;j<variables;++j){
@@ -549,23 +578,21 @@ void regression_t::update_map_distance(){
     for(multiset<beta_t,byValDesc>::iterator it=sorted_beta.begin();it!=sorted_beta.end();it++){
       beta_t b = *it;
       if (j<top_k){
-        constrained_beta[j] = b.val;
+        constrained_beta[b.index] = b.val;
       }else{
-        constrained_beta[j] = 0;
+        constrained_beta[b.index] = 0;
         constraint_dev+=b.val*b.val;
       }
       ++j;
     }
-    cerr<<"Beta deviance is "<<beta_distance_reduce<<" and theta deviance is "<<theta_distance_reduce<<" and constraint deviance is "<<constraint_dev<<endl;
+    ofs_debug<<"Beta deviance is "<<beta_distance_reduce<<" and theta deviance is "<<theta_distance_reduce<<" and constraint deviance is "<<constraint_dev<<endl;
     for(int j=0;j<variables;++j){
-      //cerr<<"Beta "<<j<<" is "<<beta[j]<<endl;
+      //ofs_debug<<"Beta "<<j<<" is "<<beta[j]<<endl;
     }
     this->map_distance = beta_distance_reduce + theta_distance_reduce + constraint_dev;
     this->dist_func = rho/sqrt(this->map_distance+epsilon);
-    cerr<<"Map distance is now "<<this->dist_func;
+    ofs_debug<<"Map distance is now "<<this->dist_func;
   }
-  //cerr<<"Scattering\n";
-  //cerr<<"Scattered\n";
 #endif
 }
 
@@ -580,10 +607,10 @@ void regression_t::iterate(){
   project_theta();
   if(slave_id>=0){
     for(int i=0;i<observations;++i){
-      //cerr<<"slave "<<slave_id<<" theta["<<i<<"] projection: "<<theta_project[i]<<endl;
+      //ofs_debug<<"slave "<<slave_id<<" theta["<<i<<"] projection: "<<theta_project[i]<<endl;
     }
     for(int j=0;j<variables;++j){
-      //cerr<<"slave "<<slave_id<<" beta["<<j<<"] projection: "<<beta_project[j]<<endl;
+      //ofs_debug<<"slave "<<slave_id<<" beta["<<j<<"] projection: "<<beta_project[j]<<endl;
     }
   }
   update_map_distance();
@@ -594,57 +621,62 @@ void regression_t::iterate(){
   //exit(0);
   //for(int iter=0;iter<10;++iter){
   //mmultiply(X,observations,variables,beta,1,Xbeta);
-    ////for(int i=0;i<5;++i){ cerr<<"Xbeta["<<i<<"] is "<<Xbeta[i]<<endl;}
+    ////for(int i=0;i<5;++i){ ofs_debug<<"Xbeta["<<i<<"] is "<<Xbeta[i]<<endl;}
     //loss();
     //float obj = evaluate_obj();
-    //cerr<<"Current objective at iter "<<iter<<" is "<<obj<<endl;
+    //ofs_debug<<"Current objective at iter "<<iter<<" is "<<obj<<endl;
     //check_constraints();
   //}
   //cout<<"BETA:\n";
   //for(int j=0;j<p;++j){
-    //if (j<10) cerr<<"BETA: "<<j<<":"<<beta[j]<<endl;
+    //if (j<10) ofs_debug<<"BETA: "<<j<<":"<<beta[j]<<endl;
   //}
-  //cerr<<"Done!\n";
+  //ofs_debug<<"Done!\n";
 }
 
 void regression_t::print_output(){
-  cout<<"INDEX\tBETA\n";
-  for(int j=0;j<variables;++j){
-    cout<<j<<":"<<beta[j]<<endl;
+  if(mpi_rank==0){
+    cout<<"INDEX\tBETA\n";
+    for(int j=0;j<variables;++j){
+      cout<<j<<":"<<beta[j]<<endl;
+    }
+    //ofs_debug<<"Done!\n";
   }
-  //cerr<<"Done!\n";
 }
 
 float regression_t::evaluate_obj(){
-  return 0;
   float obj=0;
-  float norm = 0;
-  for(int i=0;i<observations;++i){
-    norm+=(y[i]-theta[i])*(y[i]-theta[i]);
+  if (mpi_rank==0){
+    float norm = 0;
+    for(int i=0;i<observations;++i){
+      norm+=(y[i]-theta[i])*(y[i]-theta[i]);
+    }
+    //float penalty = 0;
+    //for(int j=0;j<variables;++j){
+      //penalty+=nu[j]*fabs(beta[j]);
+    //}
+    obj = .5*norm+get_prox_dist_penalty();
+    ofs_debug<<"EVALUATE_OBJ: norm1 "<<norm<<" PROXDIST: "<<get_prox_dist_penalty()<<" FULL: "<<obj<<endl;
   }
-  float penalty = 0;
-  for(int j=0;j<variables;++j){
-    penalty+=nu[j]*fabs(beta[j]);
-  }
-  obj = .5*norm+penalty+get_prox_dist_penalty();
+  MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   return obj;
 }
 
 void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
 #ifdef USE_MPI
-  //cerr<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
+  //ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
   if(output_rows==0||output_cols==0) return;
   mat = new float[output_rows*output_cols];
 
   ifstream ifs(mat_file);
   if (!ifs.is_open()){
-    cerr<<"Cannot open file "<<mat_file<<endl;
+    ofs_debug<<"Cannot open file "<<mat_file<<endl;
     if (file_req){
-      cerr<<"File "<<mat_file<<" is required. Program will exit now.\n";
+      ofs_debug<<"File "<<mat_file<<" is required. Program will exit now.\n";
       MPI_Finalize();
       exit(1);
     }else{
-      cerr<<"File is optional.  Will default values to "<<defaultVal<<endl;
+      ofs_debug<<"File is optional.  Will default values to "<<defaultVal<<endl;
       for(int i=0;i<output_rows*output_cols;++i) mat[i] = defaultVal;
       return;
     }
@@ -661,8 +693,8 @@ void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int inp
         iss>>val;
         if (col_mask[j]){
            if (output_row>=output_rows || output_col>=output_cols) {
-             cerr<<mpi_rank<<": Assigning element at "<<output_row<<" by "<<output_col<<endl;
-             cerr<<mpi_rank<<": Out of bounds\n";
+             ofs_debug<<mpi_rank<<": Assigning element at "<<output_row<<" by "<<output_col<<endl;
+             ofs_debug<<mpi_rank<<": Out of bounds\n";
              MPI_Finalize();
              exit(1);
            }
@@ -673,7 +705,7 @@ void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int inp
       ++output_row;
     }
   }
-  //if (debug) cerr<<"MPI rank "<<mpi_rank<<" successfully read in "<<mat_file<<endl;
+  //if (debug) ofs_debug<<"MPI rank "<<mpi_rank<<" successfully read in "<<mat_file<<endl;
   ifs.close();
 #endif
 }
@@ -682,7 +714,7 @@ void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int inp
 
 int main_regression(int argc,char * argv[]){
 //  if(argc<3){
-//    cerr<<"Usage: <genofile> <outcome file>\n";
+//    ofs_debug<<"Usage: <genofile> <outcome file>\n";
 //    return 1;
 //  }
 //  int arg=0;

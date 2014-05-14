@@ -33,8 +33,6 @@ void proxmap_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->kernel_base;
   }else if (token.compare("GENOTYPES")==0){
     iss>>config->genofile;
-  }else if (token.compare("RHO_DISTANCE_RATIO")==0){
-    iss>>config->rho_distance_ratio;
   }else if (token.compare("RHO_MIN")==0){
     iss>>config->rho_min;
   }else if (token.compare("RHO_SCALE_FAST")==0){
@@ -43,6 +41,8 @@ void proxmap_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->rho_scale_slow;
   }else if (token.compare("RHO_MAX")==0){
     iss>>config->rho_max;
+  }else if (token.compare("RHO_DISTANCE_RATIO")==0){
+    iss>>config->rho_distance_ratio;
   }else if (token.compare("EPSILON_MAX")==0){
     iss>>config->epsilon_max;
   }else if (token.compare("EPSILON_SCALE_FAST")==0){
@@ -57,7 +57,7 @@ void proxmap_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->mu_increment;
   }else if (token.compare("MU_INCREMENTER")==0){
     iss>>config->mu_incrementer;
-    if (config->mu_incrementer.compare("geometric")==0||config->mu_incrementer.compare("geometric")==0){
+    if (config->mu_incrementer.compare("geometric")==0||config->mu_incrementer.compare("additive")==0){
       //we're OK
       cerr<<"Using an incrementer style of "<<config->mu_incrementer<<endl;
     }else{
@@ -159,9 +159,11 @@ void proxmap_t::run(){
   float mu_min = config->mu_min;
   float mu_increment = config->mu_increment;
   float mu_max = config->mu_max;
+  if (mu_increment==0) ++mu_increment;
+  if (mu_max==mu_min) ++mu_max;
   int iter_mu = 0;
   do{ // loop over mu
-    cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<endl;
+    cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<mu_max<<endl;
     rho_distance_ratio = config->rho_distance_ratio;
     epsilon = 0.1;
     initialize();
@@ -169,7 +171,7 @@ void proxmap_t::run(){
     int iter_rho_epsilon = 0;
     bool converged = false;
     float last_obj=1e10;
-    int burnin = 1;
+    int burnin = 5;
     
     int max_iter = 1000;
     while(!converged && iter_rho_epsilon<max_iter){
@@ -178,15 +180,16 @@ void proxmap_t::run(){
       cerr<<" New rho="<<rho<<", epsilon="<<epsilon<<endl;
       iterate();
       float obj = evaluate_obj();
+      cerr<<"Last obj "<<last_obj<<" current:  "<<obj<<"!\n";
       if (iter_rho_epsilon>burnin){
         if(last_obj<=obj){
           converged = true;
           cerr<<"Objective function is not changing or going uphill from "<<last_obj<<" to "<<obj<<", aborting.\n";
         }else if(fabs(last_obj-obj)/last_obj<1e-3){
           converged=true; 
-          cerr<<"Converged with last obj "<<last_obj<<" current "<<obj<<"!\n";
+          cerr<<"Converged!\n";
         }else{
-          cerr<<"Continuing with last obj "<<last_obj<<" current "<<obj<<"!\n";
+          cerr<<"Proceeding to next iteration!\n";
         }
       }else{
         cerr<<"Ignoring objective on warmup iteration\n";
@@ -205,6 +208,8 @@ void proxmap_t::run(){
         mu+=mu_increment;
       }else if(config->mu_incrementer.compare("geometric")==0){
         mu*=mu_increment;
+      }else{
+        mu = mu_max+1;
       }
     }
     ++iter_mu;

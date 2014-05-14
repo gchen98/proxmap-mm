@@ -595,7 +595,7 @@ void cluster_t::update_u(){
 
 
 void cluster_t::print_output(){
-  bool complete = false;
+  //bool complete = false;
   bool print = false;
   cerr<<"PRINT_OUTPUT mu = "<<mu<<" last current "<<last_vnorm<<","<<current_vnorm<<endl;
   if (mu==0 || mu>=config->mu_max){

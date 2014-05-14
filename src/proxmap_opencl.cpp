@@ -1,11 +1,11 @@
 #include"proxmap.hpp"
 #include"cl_templates.hpp"
 
+#ifdef USE_GPU
 void proxmap_t::init_opencl(){
   cerr<<"Initializing OpenCL\n";
   if(run_gpu){
   // initialize the GPU if necessary
-#ifdef USE_GPU
     int platform_id = 0;
     //int platform_id = config->platform_id;
     int device_id = 0;
@@ -68,7 +68,7 @@ void proxmap_t::init_opencl(){
       throw "Aborted from OpenCL build fail.";
     }
     cerr<<"GPU kernel arguments assigned.\n";
-#endif
   }
 }
+#endif
 

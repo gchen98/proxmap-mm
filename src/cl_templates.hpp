@@ -8,6 +8,8 @@
 
 using namespace std;
 
+
+#ifdef USE_GPU
 const char * clError (cl_int rc);
 void clSafe (cl_int rc, string functionname);
 
@@ -20,7 +22,6 @@ inline void checkErr(cl_int err, const char * name)
     }
 }
 
-#ifdef USE_GPU
 
 template<class T> void proxmap_t::createBuffer(int rw, int dim, const char * label,cl::Buffer * & buf){
   ostringstream oss;

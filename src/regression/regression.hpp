@@ -15,6 +15,7 @@ private:
   MPI_Datatype floatSubjectsArrayType;
   MPI_Datatype floatVariablesArrayType;
 #endif
+  ofstream ofs_debug;
   int top_k;
   int mpi_rank;
   int slave_id;
