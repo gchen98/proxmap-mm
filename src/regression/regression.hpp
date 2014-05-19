@@ -15,6 +15,7 @@ private:
   MPI_Datatype floatSubjectsArrayType;
   MPI_Datatype floatVariablesArrayType;
 #endif
+  static const float BETA_EPSILON = .001;
   ofstream ofs_debug;
   int top_k;
   int mpi_rank;

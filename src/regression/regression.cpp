@@ -9,6 +9,7 @@
 #include<string.h>
 #include<gsl/gsl_blas.h>
 #include<gsl/gsl_linalg.h>
+#include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
 #include"regression.hpp"
 
@@ -53,22 +54,24 @@ void regression_t::update_XXT(){
 }
 
 void regression_t::project_beta(){
+  bool debug = true;
   if(slave_id>=0){
     float xt_lambda[variables];
     mmultiply(XT,variables,observations,lambda,1,xt_lambda);
     for(int j=0;j<variables;++j){
       beta_project[j] = beta[j]-xt_lambda[j];
       //beta[j] = slave_id*variables+j;
-      if (slave_id==0) ofs_debug<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
+      if (debug) ofs_debug<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
     }
   }
 }
 
 void regression_t::project_theta(){
+  bool debug = true;
   if(slave_id>=0){
     for(int i=0;i<observations;++i){
       theta_project[i] = theta[i]+lambda[i];
-      if (slave_id==0) ofs_debug<<"PROJECT_THETA: Subject "<<i<<" is "<<theta_project[i]<<endl;
+      if (debug) ofs_debug<<"PROJECT_THETA: Subject "<<i<<" is "<<theta_project[i]<<endl;
     }
   }
 }
@@ -90,6 +93,7 @@ float regression_t::get_map_distance(){
 }
 
 void regression_t::update_theta(){
+  bool debug = true;
 #ifdef USE_MPI
   float theta_project_reduce[observations];
   MPI_Reduce(theta_project,theta_project_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
@@ -99,7 +103,7 @@ void regression_t::update_theta(){
     float coeff = 1./(slaves+dist_func);
     for(int i=0;i<observations;++i){
       theta[i] = theta_project[i]+coeff*(y[i]-theta_project_reduce[i]);
-      ofs_debug<<"UPDATE_THETA: coeff: "<<coeff<<" theta["<<i<<"]:" <<theta[i]<<endl;
+      if (debug)ofs_debug<<"UPDATE_THETA: reduction: "<<theta_project_reduce[i]<<" coeff: "<<coeff<<" theta["<<i<<"]:" <<theta[i]<<endl;
     }
   }
   float theta_reduce[observations];
@@ -107,21 +111,14 @@ void regression_t::update_theta(){
   MPI_Reduce(theta,theta_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
   if (mpi_rank==0) for(int i=0;i<observations;++i) {
     theta[i] = theta_reduce[i];
-    ofs_debug<<"UPDATE_THETA for i: "<<theta[i]<<endl;
+    if (debug)ofs_debug<<"UPDATE_THETA for i: "<<theta[i]<<endl;
   }
 #endif
-  
 
-//  float d2 = get_map_distance();
-//  w = rho/sqrt(d2+epsilon);
-//  //ofs_debug<<"D2 is "<<d2<<" w is "<<w<<endl;
-//  for(int i=0;i<observations;++i){
-//    theta[i] = theta[i] + y[i]/(blocks+w) - theta[i]/(blocks+w);
-//    //if (i<5) ofs_debug<<"Subject "<<i<<" theta is "<<theta[i]<<endl;
-//  }
 }
 
 void regression_t::update_beta(){
+  bool debug = true;
 #ifdef USE_MPI
   if(mpi_rank==0){
     for(int j=0;j<variables;++j){
@@ -134,7 +131,7 @@ void regression_t::update_beta(){
   if(slave_id>=0){
     for(int j=0;j<variables;++j){
       beta[j] = .5*(beta_project[j]+constrained_beta[j]);
-      ofs_debug<<"UPDATE_BETA for "<<j<<" is project "<<beta_project[j]<<" constrained "<<constrained_beta[j]<<" and final "<<beta[j]<<endl;
+      if (debug) ofs_debug<<"UPDATE_BETA for "<<j<<" is project "<<beta_project[j]<<" constrained "<<constrained_beta[j]<<" and final "<<beta[j]<<endl;
     }
   }else{
     
@@ -142,7 +139,7 @@ void regression_t::update_beta(){
   MPI_Gatherv(beta,variables,MPI_FLOAT,beta,node_sizes,node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
   if(mpi_rank==0){
     for(int j=0;j<variables;++j){
-     ofs_debug<<"UPDATE_BETA for "<<j<<": constrained="<<constrained_beta[j]<<" beta="<<beta[j]<<endl;
+      if (debug)ofs_debug<<"UPDATE_BETA for "<<j<<": constrained="<<constrained_beta[j]<<" beta="<<beta[j]<<endl;
     }
   }
 #endif
@@ -156,12 +153,14 @@ void regression_t::update_beta(){
 }
 
 void regression_t::update_lambda(){
+  bool debug = true;
   if(slave_id>=0){
-    ofs_debug<<"Updating lambda\n";
+    //ofs_debug<<"Updating lambda\n";
     update_Xbeta();
     float xbetatheta[observations];
     for(int i=0;i<observations;++i){
       xbetatheta[i] = Xbeta[i]-theta[i];
+      if (debug) ofs_debug<<"UPDATE_LAMBDA: "<<i<<": "<<Xbeta[i]<<","<<theta[i]<<","<<xbetatheta[i]<<endl;
     }
     mmultiply(XXI_inv,observations,observations,xbetatheta,1,lambda);
   }
@@ -306,7 +305,7 @@ void regression_t::read_dataset(){
       vector<int> indices;
       uint total_variables = (j<slaves-1)?variables_per_slave:
       (variables-(slaves-1)*variables_per_slave);
-      //ofs_debug<<"Total variables for slave "<<j<<" is "<<total_variables<<endl;  
+      ofs_debug<<"Total variables for slave "<<j<<" is "<<total_variables<<endl;  
       for(uint k=0;k<total_variables;++k){
         indices.push_back(i);
         //if(debug && slave_id==j) ofs_debug<<"Slave "<<j<<" fitting index "<<i<<endl;
@@ -342,6 +341,32 @@ void regression_t::read_dataset(){
   this->variables=slave_id>=0?slave_variables:variables;
   ofs_debug<<"Node "<<mpi_rank<<" with "<<this->variables<<" variables.\n";
   load_matrix_data(genofile,X,observations,variables,observations,slave_variables, subject_mask,variable_mask,true,0);
+  // At this point we should standardize all the variables
+  ofs_debug<<"Standardizing variables\n";
+  ofs_debug.flush();
+  for(int j=0;j<this->variables;++j){ 
+    float tempvec[observations];
+    float mean = 0;
+    for(int i=0;i<observations;++i){
+      tempvec[i] = X[i*this->variables+j];
+      mean+=tempvec[i];
+    }
+    mean/=observations;
+    float sd = 0;
+    for(int i=0;i<observations;++i){
+      sd+=(tempvec[i]-mean)*(tempvec[i]-mean);
+    }
+    if (sd>0){
+      sd = sqrt(sd/(observations-1));
+      for(int i=0;i<observations;++i){
+        X[i*this->variables+j] = (tempvec[i]-mean)/sd;
+      }
+    }else{
+      for(int i=0;i<observations;++i){
+        X[i*this->variables+j] = 0;
+      }
+    }
+  }
   // Also, set up X transpose too, a constant matrix variable
   this->XT = new float[this->variables*observations];
   for(int j=0;j<this->variables;++j){
@@ -377,6 +402,7 @@ void regression_t::init_xxi_inv(){
     ifstream ifs_xxi_inv(oss_xxi_inv.str().data());
     if (ifs_xxi_inv.is_open()){
       ofs_debug<<"Using cached copy of singular values and vectors\n";
+      ofs_debug.flush();
       string line;
       for(int i=0;i<observations;++i){
         getline(ifs_xxi_inv,line);
@@ -391,6 +417,7 @@ void regression_t::init_xxi_inv(){
       //float * singular_vectors = new float[observations*observations];
       //float * singular_values = new float[observations];
       ofs_debug<<"Cannot find cached copy of singular values and vectors. Computing\n";
+      ofs_debug.flush();
       gsl_matrix * tempx = gsl_matrix_alloc(observations,this->variables);
       gsl_matrix * tempxx = gsl_matrix_alloc(observations,observations);
       ofs_debug<<"Copying into gsl matrix\n";
@@ -400,27 +427,103 @@ void regression_t::init_xxi_inv(){
         }
       }
       ofs_debug<<"Computing X%*%X^T\n"; 
+      ofs_debug.flush();
       gsl_blas_dgemm(CblasNoTrans,CblasTrans,1,tempx,tempx,0,tempxx);
-      gsl_matrix_free(tempx);
+      if(mpi_rank==-1){
+      for(int i=0;i<observations;++i){
+        for(int j=0;j<this->variables;++j){
+          if (j) cerr<<" ";
+          cerr<<gsl_matrix_get(tempxx,i,j);
+        }
+        cerr<<endl;
+      }
+
+      }
+      ofs_debug<<"Performing eigen decomp\n";
+      ofs_debug.flush();
+      //This function allocates a workspace for computing eigenvalues and eigenvectors of n-by-n real symmetric matrices. The size of the workspace is O(4n).
+      gsl_eigen_symmv_workspace * eigen_work =  gsl_eigen_symmv_alloc (observations);
       gsl_matrix * tempv = gsl_matrix_alloc(observations,observations);
       gsl_vector * temps = gsl_vector_alloc(observations);
-      gsl_vector * work  = gsl_vector_alloc(observations);
-      ofs_debug<<"Performing SVD\n";
-      gsl_linalg_SV_decomp(tempxx,tempv,temps,work);
-      gsl_matrix_free(tempxx);
-      gsl_vector_free(work);
+      //This function computes the eigenvalues and eigenvectors of the real symmetric matrix A. Additional workspace of the appropriate size must be provided in w. The diagonal and lower triangular part of A are destroyed during the computation, but the strict upper triangular part is not referenced. The eigenvalues are stored in the vector eval and are unordered. The corresponding eigenvectors are stored in the columns of the matrix evec. For example, the eigenvector in the first column corresponds to the first eigenvalue. The eigenvectors are guaranteed to be mutually orthogonal and normalised to unit magnitude.
+        
+      int code = gsl_eigen_symmv(tempxx, temps, tempv, eigen_work);
+      if (code!=0) ofs_debug<<"Returning nonzero code in eigendecomp\n";
       gsl_matrix * tempvdi = gsl_matrix_alloc(observations,observations);
-      gsl_matrix * tempvdiv = gsl_matrix_alloc(observations,observations);
       for(int i=0;i<observations;++i){
         for(int j=0;j<observations;++j){
+          //ofs_debug<<"Eigen "<<j<<","<<i<<":"<<gsl_matrix_get(tempv,j,i)<<endl;
+          //ofs_debug.flush();
           float vdi = gsl_matrix_get(tempv,i,j)/(1.+gsl_vector_get(temps,j));
           gsl_matrix_set(tempvdi,i,j,vdi);
         }
       }
+      if(mpi_rank==-1){
+        ofstream ofs_rtest0("r_test0.txt");
+        for(int i=0;i<observations;++i){
+          for(int j=0;j<variables;++j){
+            if (j) ofs_rtest0<<"\t";
+            ofs_rtest0<<gsl_matrix_get(tempx,i,j);
+          }
+          ofs_rtest0<<endl;
+        }
+        ofstream ofs_rtest1("r_test1.txt");
+        ofstream ofs_rtest2("r_test2.txt");
+        ofstream ofs_rtest3("r_test3.txt");
+        for(int i=0;i<observations;++i){
+          for(int j=0;j<observations;++j){
+            if (j) ofs_rtest1<<"\t";
+            ofs_rtest1<<gsl_matrix_get(tempxx,i,j);
+            if (i==j) ofs_rtest2<<gsl_vector_get(temps,i);
+            if (j) ofs_rtest3<<"\t";
+            ofs_rtest3<<gsl_matrix_get(tempv,i,j);
+            //ofs_rtest2<<gsl_matrix_get(tempvdi,i,j);
+          }
+          ofs_rtest1<<endl;
+          ofs_rtest2<<endl;
+          ofs_rtest3<<endl;
+        }
+        ofs_rtest0.close();
+        ofs_rtest1.close();
+        ofs_rtest2.close();
+        ofs_rtest3.close();
+        exit(1);
+      }
+      //
+      //Function: void gsl_eigen_symmv_free (gsl_eigen_symmv_workspace * w)
+      //This function frees the memory associated with the workspace w.
+      //
+      gsl_matrix_free(tempxx);
       gsl_vector_free(temps);
+      gsl_eigen_symmv_free(eigen_work);
+
+      //ofs_debug<<"Performing SVD\n";
+      //ofs_debug.flush();
+      //cerr<<"Variables: "<<variables<<" observations: "<<observations<<endl;
+      //gsl_matrix * tempv_svd = gsl_matrix_alloc(variables,variables);
+      //gsl_vector * temps_svd = gsl_vector_alloc(variables);
+      //gsl_vector * work_svd  = gsl_vector_alloc(variables);
+      //gsl_linalg_SV_decomp(tempx,tempv_svd,temps_svd,work_svd);
+      //gsl_vector_free(work_svd);
+      for(int j=0;j<this->variables;++j){
+        for(int i=0;i<observations;++i){
+          //ofs_debug<<"SVD "<<j<<","<<i<<":"<<gsl_matrix_get(tempx,i,j)<<endl;
+          //ofs_debug.flush();
+//          //float vdi = gsl_matrix_get(tempx,i,j)/(1.+gsl_vector_get(temps,j));
+//          //gsl_matrix_set(tempvdi,i,j,vdi);
+        }
+      }
+      gsl_matrix_free(tempx);
+      //gsl_matrix_free(tempv_svd);
+      //gsl_vector_free(temps_svd);
+      ofs_debug<<"Computing VDIV\n";
+      ofs_debug.flush();
+      gsl_matrix * tempvdiv = gsl_matrix_alloc(observations,observations);
       gsl_blas_dgemm(CblasNoTrans,CblasTrans,1,tempvdi,tempv,0,tempvdiv);
-      gsl_matrix_free(tempv);
       gsl_matrix_free(tempvdi);
+      gsl_matrix_free(tempv);
+      ofs_debug<<"Writing to file "<<oss_xxi_inv.str()<<"\n";
+      ofs_debug.flush();
       ofstream ofs_xxi_inv(oss_xxi_inv.str().data());
       for(int i=0;i<observations;++i){
         for(int j=0;j<observations;++j){
@@ -529,19 +632,24 @@ float regression_t::infer_rho(){
   float scaler = this->mu * config->rho_distance_ratio;
   float new_rho;
   if (mpi_rank==0){
+    ofs_debug<<"INFER_RHO: Inner iterate: "<<iter_rho_epsilon<<endl;
+    //new_rho = scaler *  sqrt(this->map_distance+epsilon);
     new_rho = scaler * this->slaves * sqrt(this->map_distance+epsilon);
+    ofs_debug<<"INFER_RHO: mu: "<<this->mu<<" new rho: "<<new_rho<<endl;
   }
   MPI_Bcast(&new_rho,1,MPI_FLOAT,0,MPI_COMM_WORLD);
-  ofs_debug<<"INFER_RHO: mu: "<<this->mu<<" new rho: "<<new_rho<<endl;
   return new_rho;
 }
 
 void regression_t::initialize(){
-  if (this->mu == config->mu_min){
+  if (mpi_rank==0){
+    ofs_debug<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
+  }
+  if (this->mu == 0){
     this->top_k = config->top_k;
     for(int i=0;i<this->observations;++i){
       Xbeta[i] = 0;
-      theta[i] = 0;
+      theta_project[i] = theta[i] = 0;
     }
     for(int j=0;j<this->variables;++j){
       beta[j] = 0;
@@ -566,7 +674,7 @@ void regression_t::update_map_distance(){
   MPI_Reduce(&beta_distance,&beta_distance_reduce,1,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
   MPI_Reduce(&theta_distance,&theta_distance_reduce,1,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
   MPI_Gatherv(beta,variables,MPI_FLOAT,beta,node_sizes,node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
-  ofs_debug<<"UPDATE_MAP_DISTANCE: sorting constrained beta\n";
+  //ofs_debug<<"UPDATE_MAP_DISTANCE: sorting constrained beta\n";
   if(mpi_rank==0){
     multiset<beta_t,byValDesc> sorted_beta;
     for(int j=0;j<variables;++j){
@@ -585,13 +693,13 @@ void regression_t::update_map_distance(){
       }
       ++j;
     }
-    ofs_debug<<"Beta deviance is "<<beta_distance_reduce<<" and theta deviance is "<<theta_distance_reduce<<" and constraint deviance is "<<constraint_dev<<endl;
+    //ofs_debug<<"Beta deviance is "<<beta_distance_reduce<<" and theta deviance is "<<theta_distance_reduce<<" and constraint deviance is "<<constraint_dev<<endl;
     for(int j=0;j<variables;++j){
       //ofs_debug<<"Beta "<<j<<" is "<<beta[j]<<endl;
     }
     this->map_distance = beta_distance_reduce + theta_distance_reduce + constraint_dev;
     this->dist_func = rho/sqrt(this->map_distance+epsilon);
-    ofs_debug<<"Map distance is now "<<this->dist_func;
+    ofs_debug<<"Map distance is now "<<this->dist_func<<endl;
   }
 #endif
 }
@@ -636,9 +744,15 @@ void regression_t::iterate(){
 
 void regression_t::print_output(){
   if(mpi_rank==0){
-    cout<<"INDEX\tBETA\n";
+    cout<<"Mu: "<<mu<<" iterations: "<<iter_rho_epsilon<<endl;
+    cout<<"ACTIVE?\tINDEX\tBETA\n";
     for(int j=0;j<variables;++j){
-      cout<<j<<":"<<beta[j]<<endl;
+      if (fabs(beta[j])>BETA_EPSILON){
+        cout<<"+";
+      }else{
+        cout<<"-";
+      }
+      cout<<"\t"<<j<<"\t"<<beta[j]<<endl;
     }
     //ofs_debug<<"Done!\n";
   }
@@ -657,6 +771,7 @@ float regression_t::evaluate_obj(){
     //}
     obj = .5*norm+get_prox_dist_penalty();
     ofs_debug<<"EVALUATE_OBJ: norm1 "<<norm<<" PROXDIST: "<<get_prox_dist_penalty()<<" FULL: "<<obj<<endl;
+    ofs_debug<<"EVALUATE_OBJ: Last obj "<<last_obj<<" current:  "<<obj<<"!\n";
   }
   MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   return obj;
@@ -664,7 +779,8 @@ float regression_t::evaluate_obj(){
 
 void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
 #ifdef USE_MPI
-  //ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
+  ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
+  ofs_debug.flush();
   if(output_rows==0||output_cols==0) return;
   mat = new float[output_rows*output_cols];
 
@@ -705,7 +821,7 @@ void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int inp
       ++output_row;
     }
   }
-  //if (debug) ofs_debug<<"MPI rank "<<mpi_rank<<" successfully read in "<<mat_file<<endl;
+  ofs_debug<<"MPI rank "<<mpi_rank<<" successfully read in "<<mat_file<<endl;
   ifs.close();
 #endif
 }

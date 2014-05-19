@@ -90,7 +90,7 @@ void cluster_t::allocate_memory(string config_file){
 
 void cluster_t::initialize(){
   float transition_mu = config->mu_max/2;
-  cerr<<"Transition mu for shifting weights is "<<transition_mu<<endl;
+  cerr<<"INITIALIZE: current Mu: "<<mu<<endl;
   if (mu==transition_mu){
     load_into_triangle(config->late_weightsfile.data(),weights,n,n);
     if(run_gpu) update_weights_gpu();
@@ -612,7 +612,7 @@ void cluster_t::print_output(){
       get_U_gpu();
     }
     ostringstream oss;
-    oss<<print_index<<"_rho"<<rho<<".epsilon"<<epsilon<<".mu"<<mu<<".clusters.txt";
+    oss<<config->output_path<<"/"<<print_index<<"_rho"<<rho<<".epsilon"<<epsilon<<".mu"<<mu<<".clusters.txt";
     string filename=oss.str();
     ofstream ofs(filename.data());
     //ofs<<"DATAPOINT	CLUSTER\n";
@@ -627,7 +627,7 @@ void cluster_t::print_output(){
     ofs.close();
   
     ostringstream oss2;
-    oss2<<print_index<<"_rho"<<rho<<".epsilon"<<epsilon<<".mu"<<mu<<".coals.txt";
+    oss2<<config->output_path<<"/"<<print_index<<"_rho"<<rho<<".epsilon"<<epsilon<<".mu"<<mu<<".coals.txt";
     filename=oss2.str();
     ofs.open(filename.data());
     for(int i1=0;i1<n-1;++i1){

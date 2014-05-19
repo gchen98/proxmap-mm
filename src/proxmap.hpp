@@ -34,6 +34,7 @@ struct config_t{
   int device_id;
   string kernel_base;
   string genofile;
+  string output_path;
   // convex cluster settings
   string early_weightsfile;
   string late_weightsfile;
@@ -82,7 +83,8 @@ protected:
   float last_rho,rho,epsilon,rho_distance_ratio;
   float map_distance;
   float dist_func;
-  float mu;
+  float mu,obj,last_obj;
+  int iter_mu,iter_rho_epsilon;
   bool run_gpu;
   bool run_cpu;
 #ifdef USE_GPU
