@@ -1,4 +1,4 @@
-use_mpi=1
+use_mpi=0
 use_gpu=0
 
 #compiler

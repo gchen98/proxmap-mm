@@ -178,6 +178,7 @@ void regression_with_theta_t::project_beta(){
 }
 
 void regression_with_theta_t::project_theta(){
+#ifdef USE_MPI
   //double start = clock();
   bool debug = true;
   float theta_project_norm = 0;
@@ -196,6 +197,7 @@ void regression_with_theta_t::project_theta(){
     if(config->verbose)cerr<<"PROJECT_THETA: For node "<<i<<" theta project norm: "<<theta_project_norms[i]<<endl;
   }
   //if(config->verbose) cerr<<"BENCHMARK PROJECT_THETA: "<<(clock()-start)/CLOCKS_PER_SEC<<endl;
+#endif
 }
 
 void regression_with_theta_t::update_map_distance(){

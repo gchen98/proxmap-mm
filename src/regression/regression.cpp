@@ -230,8 +230,8 @@ void regression_t::update_beta(){
 
 void regression_t::update_constrained_beta(){
   // prepare to broadcast full beta vector to slaves
-  int active_indices[top_k];
-  float active_vals[top_k];
+  //int active_indices[top_k];
+  //float active_vals[top_k];
   int active_counter = 0;
   if(mpi_rank==0){
     multiset<beta_t,byValDesc> sorted_beta;
@@ -244,8 +244,8 @@ void regression_t::update_constrained_beta(){
       beta_t b = *it;
       if (j<top_k){
         constrained_beta[b.index] = b.val;
-        active_indices[active_counter] = b.index;
-        active_vals[active_counter] = b.val;
+        //active_indices[active_counter] = b.index;
+        //active_vals[active_counter] = b.val;
         ++active_counter; 
       }else{
         constrained_beta[b.index] = 0;
