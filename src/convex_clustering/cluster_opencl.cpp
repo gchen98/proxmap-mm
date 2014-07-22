@@ -180,11 +180,11 @@ void cluster_t::update_map_distance_gpu(){
     norm1+=norm1_arr[i];
     norm2+=norm2_arr[i];
   }
-  cerr<<"GPU Norm1 was "<<norm1<<" and norm2 was "<<norm2<<endl;
+  if(config->verbose) cerr<<"GPU Norm1 was "<<norm1<<" and norm2 was "<<norm2<<endl;
   float norm = norm1+norm2;
   this->map_distance = norm;
   this->dist_func = sqrt(this->map_distance+epsilon);
-  cerr<<"GET_MAP_DISTANCE: New map distance is "<<norm<<" with U distance="<<norm1<<", V distance="<<norm2<<" dist_func: "<<dist_func<<endl;
+  if(config->verbose)cerr<<"GET_MAP_DISTANCE: New map distance is "<<norm<<" with U distance="<<norm1<<", V distance="<<norm2<<" dist_func: "<<dist_func<<endl;
 #endif
 }
 
@@ -329,7 +329,7 @@ void cluster_t::finalize_iteration_gpu(){
   }
   U_norm_diff = sqrt(gpu_U_norm_diff);
 
-  cerr<<"FINALIZE_ITERATION: GPU U_norm_diff: "<<U_norm_diff<<endl;
+  if(config->verbose)cerr<<"FINALIZE_ITERATION: GPU U_norm_diff: "<<U_norm_diff<<endl;
 #endif
 }
 

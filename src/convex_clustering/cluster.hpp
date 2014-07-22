@@ -15,14 +15,16 @@ using namespace std;
 
 class cluster_t:public proxmap_t{
 public:
+  void init(string configfile);
+  void allocate_memory();
   cluster_t();
   ~cluster_t();
 private:
-  void allocate_memory(string configfile);
   void init_opencl();
   void parse_config_line(string & key, istringstream & iss);
   void iterate();
   bool finalize_iteration();
+  bool finalize_inner_iteration();
   void finalize_iteration_gpu();
   float get_map_distance();
   float evaluate_obj();
@@ -92,6 +94,7 @@ private:
   void initialize_gpu();
   void load_into_triangle(const char * filename,float * & mat,int rows, int cols);
 
+  float infer_epsilon();
   float infer_rho();
   void init_v_project_coeff();
   void init_v_project_coeff_gpu();
@@ -106,6 +109,13 @@ private:
   void update_u();
   void update_u_gpu();
   void check_constraint();
-  
+
+  // QN acceleration  
+  float min_rho,max_rho;
+  int get_qn_parameter_length();
+  void get_qn_current_param(float * params);
+  void store_qn_current_param(float * params);
+  bool proceed_qn_commit();
+  int total_iter;
   
 };

@@ -10,10 +10,8 @@ cluster_t::~cluster_t(){
 
 void cluster_t::parse_config_line(string & token,istringstream & iss){
   proxmap_t::parse_config_line(token,iss);
-  if (token.compare("EARLY_WEIGHTS")==0){
-    iss>>config->early_weightsfile;
-  }else if (token.compare("LATE_WEIGHTS")==0){
-    iss>>config->late_weightsfile;
+  if (token.compare("WEIGHTS")==0){
+    iss>>config->weightsfile;
   }else if (token.compare("DATAPOINTS")==0){
     iss>>config->datapoints;
   }else if (token.compare("VARIABLES")==0){
@@ -24,13 +22,21 @@ void cluster_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->geno_order;
   }else if (token.compare("U_DELTA_RHO_CAP")==0){
     iss>>config->u_delta_rho_cap;
+  }else if (token.compare("PRINT_THRESHOLD")==0){
+    iss>>config->print_threshold;
   }
 }
 
-void cluster_t::allocate_memory(string config_file){
+void cluster_t::init(string config_file){
+  config->geno_format = "verbose";
+  config->print_threshold = .1;
+  proxmap_t::init(config_file);
+}
+
+void cluster_t::allocate_memory(){
+  total_iter = 0;
   print_index = 100000;
-  proxmap_t::allocate_memory(config_file);
-  cerr<<"Allocating class memory\n";
+  //cerr<<"Allocating class memory\n";
   // figure out the dimensions
   n = config->datapoints;
   //n = linecount(config->genofile.data());
@@ -39,7 +45,7 @@ void cluster_t::allocate_memory(string config_file){
   this->variable_blocks = (p/BLOCK_WIDTH + (p%BLOCK_WIDTH!=0));
   this->sub_fnorm = new float[n*variable_blocks];
   //p = colcount(config->genofile.data());
-  cerr<<"Subjects: "<<n<<" and predictors: "<<p<<endl;
+  if(config->verbose) cerr<<"Subjects: "<<n<<" and predictors: "<<p<<endl;
   offsets = new int[n];
   offsets[0] = 0;
   //cerr<<"Offset for "<<0<<" is "<<offsets[0]<<endl;
@@ -50,8 +56,8 @@ void cluster_t::allocate_memory(string config_file){
     --last_width;
   }
   triangle_dim = offsets[n-1]+1;
-  cerr<<"Triangle dim is "<<triangle_dim<<endl;
-  cerr<<"Allocating arrays\n";
+  if(config->verbose)cerr<<"Triangle dim is "<<triangle_dim<<endl;
+  //cerr<<"Allocating arrays\n";
   rawdata = new float[n*p];
   U  = new float[n*p];
   U_prev  = new float[n*p];
@@ -63,17 +69,18 @@ void cluster_t::allocate_memory(string config_file){
   V_project_coeff = new float[triangle_dim];
   norm1_arr = new float[n];
   norm2_arr = new float[triangle_dim];
-  cerr<<"Reading in input files\n";
+  //if(config->verbose) cerr<<"Reading in input files\n";
   if(config->geno_format.compare("verbose")==0){
     load_into_matrix(config->genofile.data(),rawdata,n,p);
   }else if(config->geno_format.compare("compact")==0){
     load_compact_geno(config->genofile.data());
   }else {
+    cerr<<"Geno format of "<<config->geno_format<<endl;
     throw "Invalid genoformat specified.";
   }
   weights = new float[triangle_dim];
   V_project_coeff = new float[triangle_dim];
-  cerr<<"Reading in input files\n";
+  //cerr<<"Reading in input files\n";
   if(config->geno_format.compare("verbose")==0){
     load_into_matrix(config->genofile.data(),rawdata,n,p);
   }else if(config->geno_format.compare("compact")==0){
@@ -86,19 +93,16 @@ void cluster_t::allocate_memory(string config_file){
   if(run_gpu){
     init_opencl();
   }
+  proxmap_t::allocate_memory();
 }
 
 void cluster_t::initialize(){
-  float transition_mu = config->mu_max/2;
-  cerr<<"INITIALIZE: current Mu: "<<mu<<endl;
-  if (mu==transition_mu){
-    load_into_triangle(config->late_weightsfile.data(),weights,n,n);
-    if(run_gpu) update_weights_gpu();
-  }else if (mu==0){
-    load_into_triangle(config->early_weightsfile.data(),weights,n,n);
+  cerr<<"INITIALIZE: current regularization level mu:"<<mu<< ",last rho:"<<last_rho<<endl;
+  if (mu==0){
+    load_into_triangle(config->weightsfile.data(),weights,n,n);
     if(run_gpu) update_weights_gpu();
     if (run_cpu){
-      cerr<<"Initializing U and its projection\n";
+      //cerr<<"Initializing U and its projection\n";
       bool debug_cpu = false;
       for(int i=0;i<n;++i){
         for(int j=0;j<p;++j){
@@ -176,31 +180,82 @@ void cluster_t::load_into_triangle(const char * filename,float * & mat,int rows,
   }
   ifs.close();
 }
+float cluster_t::infer_epsilon(){
+  float new_eps = last_epsilon*.1;
+  if (new_eps<config->epsilon_min) new_eps = config->epsilon_min;
+  return new_eps;
+}
+
 
 float cluster_t::infer_rho(){
-  float new_rho = 0;
-  if (mu>config->mu_min && U_norm_diff<config->u_delta_rho_cap){
-    new_rho = this->last_rho;
-    cerr<<"INFER_RHO: Norm diff U is "<<U_norm_diff<<" suspending rho increase. "<<endl;
-  }else{
-    new_rho = mu*dist_func*rho_distance_ratio;
-    cerr<<"INFER_RHO: Rho adjusted proportionally to mu\n";
+  bool scan_range = false;
+  if(scan_range){
+    min_rho = 1e10;
+    max_rho = 0;
+    float current_rho;
+    for(int index1=0;index1<n-1;++index1){
+      for(int index2=index1+1;index2<n;++index2){
+        float & weight = weights[offsets[index1]+index2-index1];
+        float & scaler  = V_project_coeff[offsets[index1]+(index2-index1)];
+        if (weight == 0){
+          // no shrinkage
+          scaler = 1;
+        }else{
+          float l2norm_b = 0;
+          for(int j=0;j<p;++j){
+            //float v = 100;
+            float v = (U_project_orig[index1*p+j]-U_project_orig[index2*p+j]); 
+            l2norm_b+=(v*v);
+          }
+          if(l2norm_b==0){
+            scaler = 1;
+          }else{
+            l2norm_b = sqrt(l2norm_b);
+            current_rho = mu * dist_func * weight/l2norm_b;
+            if(current_rho<min_rho) min_rho = current_rho;
+            if(current_rho>max_rho) max_rho = current_rho;
+          }
+        }
+      }
+    }
+    if(config->verbose)cerr<<"INFER_RHO: Rho range: "<<min_rho<<"-"<<max_rho<<endl;
   }
-  cerr<<"INFER_RHO: last rho was "<<this->rho<<" proposed rho is "<<new_rho<<endl;
+  float new_rho = 0;
+  if(config->verbose)cerr<<"INFER_RHO: Norm diff U is "<<U_norm_diff<<endl;
+  //if (mu>config->mu_min && U_norm_diff<config->u_delta_rho_cap){
+  if (in_feasible_region()){
+    new_rho = this->last_rho;
+    //if(config->verbose)cerr<<"INFER_RHO: Suspending rho increase. "<<endl;
+  }else{
+    //new_rho = last_rho*1.1;
+    //new_rho = max_rho;
+    new_rho = mu*dist_func*rho_distance_ratio;
+    //if(config->verbose)cerr<<"INFER_RHO: Rho adjusted proportionally to mu\n";
+  }
+  if(config->verbose)cerr<<"INFER_RHO: last rho was "<<this->rho<<" proposed rho is "<<new_rho<<endl;
   return new_rho;
 }
 
 
 void cluster_t::init_v_project_coeff(){
   if (run_gpu){
+    store_U_projection_gpu();
     init_v_project_coeff_gpu();
   }
   if (run_cpu){
+    for(int i=0;i<n;++i){
+      for(int j=0;j<p;++j){
+        U_project_orig[i*p+j] = U_project[i*p+j];
+      }
+    }
     //float small = 1e-10;
     int nearcoals = 0;
     int noncoals = 0;
     int coals = 0;
     int zeros = 0;
+    min_rho = 1e10;
+    max_rho = 0;
+    float lambda_unweighted = mu * dist_func / rho;
     for(int index1=0;index1<n-1;++index1){
       for(int index2=index1+1;index2<n;++index2){
         float & weight = weights[offsets[index1]+index2-index1];
@@ -221,7 +276,7 @@ void cluster_t::init_v_project_coeff(){
             ++coals;
           }else{
             l2norm_b = sqrt(l2norm_b);
-            float lambda = mu * dist_func * weight / rho;
+            float lambda =  weight*lambda_unweighted;
             if (lambda<l2norm_b){
               scaler = (1.-lambda/l2norm_b);
               ++noncoals;
@@ -244,7 +299,7 @@ void cluster_t::init_v_project_coeff(){
       }
       //exit(0);
     }
-    cerr<<"INIT_V_COEFF: There are "<<zeros<<" zero weights "<<coals<<" coals and "<<noncoals<<" noncoals and "<<nearcoals<<" near coals.\n";
+    if(config->verbose)cerr<<"INIT_V_COEFF: There are "<<zeros<<" zero weights "<<coals<<" coals and "<<noncoals<<" noncoals and "<<nearcoals<<" near coals.\n";
   }
 }
 
@@ -267,21 +322,18 @@ bool cluster_t::get_updated_v(int index1,int index2, float * v){
 }
 
 void cluster_t::update_projection(){
-  if (run_gpu){
-    store_U_projection_gpu();
-  }
   if (run_cpu){
     bool debug_cpu1 = false;
     for(int i=0;i<n;++i){
       for(int j=0;j<p;++j){
-        U_project_orig[i*p+j] = U_project[i*p+j];
+        //U_project_orig[i*p+j] = U_project[i*p+j];
         U_project[i*p+j] = U[i*p+j];
         if (debug_cpu1 && i>(n-3) && j>(p-3)) cerr<<"CPU: U_project: "<<i<<","<<j<<": "<<U_project[i*p+j]<<endl;
       }
     }
     //if (debug_cpu1) exit(0);
   }
-  init_v_project_coeff();
+  //init_v_project_coeff();
   bool debug = false;
   float last_fnorm[n];
   for(int i=0;i<n;++i) last_fnorm[i] = 1e10;
@@ -435,7 +487,7 @@ void cluster_t::update_projection(){
     if(debug)cerr<<"UPDATE_PROJECTION: Iteration "<<iter<<endl;
   }
   if (converged){
-    cerr<<"UPDATE_PROJECTION: Converged in "<<iter<<" iterations."<<endl;
+    if(config->verbose)cerr<<"UPDATE_PROJECTION: Converged in "<<iter<<" iterations."<<endl;
   }else{
     cerr<<"UPDATE_PROJECTION: Failed to converged after "<<iter<<" iterations."<<endl;
   }
@@ -453,20 +505,15 @@ void cluster_t::update_projection(){
 }
 
 void cluster_t::update_projection_nonzero(){
-  bool debug = true;
+  bool debug = false;
   //bool converged = false;
   //float last_fnorm = -1e10;
   //float fnorm = 0;
-  for(int i=0;i<n;++i){
-    for(int j=0;j<p;++j){
-      U_project_orig[i*p+j] = U_project[i*p+j];
-    }
-  }
-  init_v_project_coeff();
+  //init_v_project_coeff();
   for(int index = 0;index<n;++index){
     //cerr<<"For subject "<<index<<"\n";
-    float v_left[p];
-    float v_right[p];
+    //float v_left[p];
+    //float v_right[p];
     float left_summation[p];
     float right_summation[p];
     float all_summation[p];
@@ -478,20 +525,27 @@ void cluster_t::update_projection_nonzero(){
     int left_neighbors=0,right_neighbors=0, neighbors = 0;
     for(int i=0;i<n;++i){
       if(i!=index){
+        int offset_index = index<i?offsets[index]+i-index: 
+        offsets[i]+index-i;
+        //float weight = weights[offset_index];
         if (i<index){
           ++left_neighbors;
-          if (get_updated_v(i,index,v_left)){
+          float scaler  =  V_project_coeff[offset_index];
+          if (scaler>0){
+          //if (get_updated_v(i,index,v_left)){
             for(int j=0;j<p;++j){
               //left_summation[j]+=V[i*n*p+index*p+j];
-              left_summation[j]+=v_left[j];
+              left_summation[j]+=scaler * (U_project_orig[i*p+j]- U_project_orig[index*p+j]);
             }
           }
         }else if (index<i){
           ++right_neighbors;
-          if (get_updated_v(index,i,v_right)){
+          float scaler  =  V_project_coeff[offset_index];
+          if (scaler>0){
+          //if (get_updated_v(index,i,v_right)){
             for(int j=0;j<p;++j){
               //right_summation[j]+=V[index*n*p+i*p+j];
-              right_summation[j]+=v_right[j];
+              right_summation[j]+=scaler * (U_project_orig[index*p+j]-U_project_orig[i*p+j]);
             }
           }
         }
@@ -506,6 +560,7 @@ void cluster_t::update_projection_nonzero(){
        if(debug) cerr<<"UPDATE_PROJECTION: index "<<index<<", var "<<j<<" n: "<<n<<" U point: "<<U[index*p+j]<<" right: "<<right_summation[j]<<" left: "<<left_summation[j]<<" all: "<<all_summation[j]<<" U projection: "<<U_project[index*p+j]<<endl;
     }
   } // subjects looop
+  update_map_distance();
 }
 
 
@@ -549,11 +604,11 @@ void cluster_t::update_map_distance(){
       norm2+=norm2_arr[k];
       //cerr<<"CPU Block "<<k<<" norm: "<<norm1_arr[k]<<","<<norm2_arr[k]<<endl;
     }
-    cerr<<"CPU Norm1 was "<<norm1<<" and norm2 was "<<norm2<<endl;
+    if(config->verbose)cerr<<"CPU Norm1 was "<<norm1<<" and norm2 was "<<norm2<<endl;
     float norm = norm1+norm2;
     this->map_distance = norm;
     this->dist_func = sqrt(this->map_distance+epsilon);
-    cerr<<"GET_MAP_DISTANCE: New map distance is "<<norm<<" with U distance="<<norm1<<", V distance="<<norm2<<" dist_func: "<<dist_func<<endl;
+    if(config->verbose) cerr<<"GET_MAP_DISTANCE: New map distance is "<<norm<<" with U distance="<<norm1<<", V distance="<<norm2<<" dist_func: "<<dist_func<<endl;
   }
 }
 
@@ -588,26 +643,27 @@ void cluster_t::update_u(){
       //exit(0);
     }
 
-    cerr<<"UPDATE_U: genochanges: "<<geno_changes<<" U_project changes: "<<U_changes <<" mixtures: "<<mixes<<"\n";
+    if(config->verbose)cerr<<"UPDATE_U: genochanges: "<<geno_changes<<" U_project changes: "<<U_changes <<" mixtures: "<<mixes<<"\n";
   }
-  update_map_distance();
+  //update_map_distance();
 }
 
 
 void cluster_t::print_output(){
   //bool complete = false;
   bool print = false;
-  cerr<<"PRINT_OUTPUT mu = "<<mu<<" last current "<<last_vnorm<<","<<current_vnorm<<endl;
-  if (mu==0 || mu>=config->mu_max){
+  // if first iteration, or last iteration (succeeded or not)
+  if (mu==0 || mu>=config->mu_max || fabs(current_vnorm-0)<.0001){
     print = true;
     last_vnorm = 1e10;
   }else{
-    if (last_vnorm-current_vnorm>.01){
+    if (last_vnorm-current_vnorm>config->print_threshold){
       print = true;
       last_vnorm = current_vnorm;
     }
   }
   if(print){
+    if(config->verbose)cerr<<"PRINT_OUTPUT mu:"<<mu<<", last V norm:"<<last_vnorm<<", current V norm:"<<current_vnorm<<endl;
     if (run_gpu){
       get_U_gpu();
     }
@@ -662,7 +718,10 @@ void cluster_t::check_constraint(){
 }
 
 bool cluster_t::in_feasible_region(){
-  return true;
+  float mapdist = get_map_distance();
+  bool ret= (mapdist>0 && mapdist<config->mapdist_epsilon);
+  return ret;
+  //return true;
   float norm = 0;
   int normalizer = 0;
   int clusters=0;
@@ -720,16 +779,19 @@ bool cluster_t::in_feasible_region(){
   }
   norm/=1.*normalizer;
   //cerr<<"IN_FEASIBLE_REGION: total V coalescent events: "<<clusters<<" U-U events "<<clusters_u<<" c_norm mean: "<<(c_mean*1./clusters)<<" range: ("<<c_min<<"-"<<c_max<<")"<<endl;
-  bool ret = norm<1e-4;
+  //bool ret = norm<1e-4;
   //cerr<<"IN_FEASIBLE_REGION: norm "<<norm<<" differences "<<normalizer<<" returning "<<ret<<endl;
-  return ret;
+  //return ret;
 }
 
 // each iteration of the projection and the point updates
 
 void cluster_t::iterate(){
+  init_v_project_coeff();
+  //update_projection_nonzero(); 
   update_projection(); 
   update_u();
+  ++total_iter;
 }
 
 // compute the value of the augmented objective function
@@ -835,10 +897,13 @@ float cluster_t::evaluate_obj(){
   float penalty = get_prox_dist_penalty();
   float obj = .5*norm1+mu*norm2+penalty;
   current_vnorm = norm2;
-  cerr<<"EVAL_OBJECTIVE: Objective is "<<obj<<" ||X-U|| is "<<norm1<<" and ||V|| is "<<norm2<<" mu penalized ||V||: "<<(mu*norm2)<<" proxdist penalty: "<<penalty<<endl;
+  cerr<<"EVAL_OBJECTIVE: Inner iterate:"<<iter_rho_epsilon<<", objective:"<<obj<<", ||X-U||:"<<norm1<<", ||V||:"<<norm2<<", mu||V||:"<<(mu*norm2)<<",proxdist penalty:"<<penalty<<endl;
   return obj;
 }   
 
+bool cluster_t::finalize_inner_iteration(){
+  return true;
+}
 bool cluster_t::finalize_iteration(){
   if(run_gpu){
     finalize_iteration_gpu();
@@ -852,14 +917,31 @@ bool cluster_t::finalize_iteration(){
       }
     }
     U_norm_diff=sqrt(U_norm_diff);
-    cerr<<"FINALIZE_ITERATION: CPU U_norm_diff: "<<U_norm_diff<<endl;
+    if(config->verbose)cerr<<"FINALIZE_ITERATION: CPU U_norm_diff: "<<U_norm_diff<<endl;
     for(int i=0;i<n;++i){
       for(int j=0;j<p;++j){
         U_prev[i*p+j] = U[i*p+j];
       }
     }
   }
+  cerr<<"FINALIZE_ITERATION: Cumulative iterations:"<<total_iter<<endl;
   return (mu<=config->mu_min || fabs(current_vnorm-0)>.0001);
+}
+
+int cluster_t::get_qn_parameter_length(){
+  return (n*p);
+}
+
+void cluster_t::get_qn_current_param(float * params){
+}
+
+void cluster_t::store_qn_current_param(float * params){
+
+}
+
+
+bool cluster_t::proceed_qn_commit(){
+  return true;
 }
 
 int main_cluster(int argc,char * argv[]){

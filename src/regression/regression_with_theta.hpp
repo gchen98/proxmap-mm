@@ -7,10 +7,10 @@ using namespace std;
 
 class cross_validation_t;
 
-class regression_t:public proxmap_t{
+class regression_with_theta_t:public proxmap_t{
 public:
-  regression_t(bool single_run);
-  ~regression_t();
+  regression_with_theta_t(bool single_run);
+  ~regression_with_theta_t();
   void init(string configfile);
   void allocate_memory();
   friend class cross_validation_t;
@@ -31,10 +31,8 @@ private:
   int mpi_numtasks;
   uint slaves;
   int mpi_rc;
-  int * snp_node_sizes;
-  int * snp_node_offsets;
-  int * subject_node_sizes;
-  int * subject_node_offsets;
+  int * node_sizes;
+  int * node_offsets;
   float beta_distance;
   float theta_distance;
   
@@ -55,43 +53,40 @@ private:
   void initialize();
   float infer_rho();
   float infer_epsilon();
-  void compute_XX();
   
-  void standardize(float * X, int rows,int cols);
 
 
   float private_rho,private_epsilon;
   int total_iterations;
-  int sub_observations,observations,variables,all_variables;
+  int observations,variables;
   //int observations,n,variables,p;
   int blocks;
   float w;
   float maxr,maxc;
+  float * XXI_inv;
+  //float * singular_vectors;
   float * nu;
   float * beta_project;
   float * beta;
-  float * all_beta;
   float * last_beta;
-  float * all_constrained_beta;
   float * constrained_beta;
-  //float L;
-  float * X; // stores a sub problem (snp major)
-  float * XT; // transpose of sub problem
-  float * XX; // this stores XX^T
-  float * XXI_inv; // the cached data of (X^T %*% X + I)^-1
-  float * X_stripe; // stores a sub problem by subject major
-  float * all_y;
-  float * y;
+  float * theta_project;
+  float * theta;
   float * lambda;
-  float * Xbeta; // these have length dependent on sub observations
-  float * theta; // these have length dependent on sub observations
-  float * theta_project; // these have length dependent on sub observations
+  float L;
+  float * X;
+  float * XT;
+  float * XXTI;
+  float * y;
+  float * Xbeta;
   float last_residual;
   float residual;
   bool track_residual;
   
-  void project_theta();
+  void update_Xbeta(float * beta);
+  void update_XXT();
   void project_beta();
+  void project_theta();
   void update_theta();
   void update_beta();
   void update_lambda();
@@ -103,7 +98,6 @@ private:
   void get_qn_current_param(float * params);
   void store_qn_current_param(float * params);
   bool proceed_qn_commit();
-  void update_constrained_beta();
 
 };
 

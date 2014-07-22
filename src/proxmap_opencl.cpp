@@ -3,7 +3,7 @@
 
 #ifdef USE_GPU
 void proxmap_t::init_opencl(){
-  cerr<<"Initializing OpenCL\n";
+  cerr<<"Initializing OpenCL...\n";
   if(run_gpu){
   // initialize the GPU if necessary
     int platform_id = 0;

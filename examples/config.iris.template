@@ -1,0 +1,14 @@
+USE_CPU 1
+USE_GPU	0
+
+# GPU STUFF
+PLATFORM_ID	0
+DEVICE_ID	0
+KERNELS /home/garyc/development/proxmap-mm/trunk/src/convex_clustering/kernels/
+
+
+DATAPOINTS	SUBJECTS
+VARIABLES	DIMENSION
+WEIGHTS WEIGHTFILE
+GENOTYPES	DATAFILE
+OUTPUT_PATH	iris_clusters
