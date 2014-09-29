@@ -1,6 +1,6 @@
 include ../common.mk
 
-OBJS=regression.o regression_with_theta.o
+OBJS=regression.o
 
 compile: $(OBJS)
 

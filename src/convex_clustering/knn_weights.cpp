@@ -64,7 +64,7 @@ void load_distances(){
       //iss>>distances[i1*n+i2];
       float dist;
       iss>>dist;
-      if (i1!=i2 && dist>0){
+      if (i1!=i2 && dist>=0){
         neighbor_t neighbor;
         neighbor.index = i2;
         neighbor.dist = dist;
@@ -96,7 +96,7 @@ void store_distances(){
           distances[i*n+neighbor.index] = neighbor.dist; 
         }else{
           distances[neighbor.index*n+i] = neighbor.dist; 
-          if (debug) cerr<<"REVERSE for "<<i<<" and "<<neighbor.index<<endl;
+          //if (debug) cerr<<"REVERSE for "<<i<<" and "<<neighbor.index<<endl;
         }
         
         it3++;

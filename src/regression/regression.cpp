@@ -1,3 +1,4 @@
+#include<assert.h>
 #include<set>
 #include<vector>
 #include<iostream>
@@ -42,25 +43,28 @@ regression_t::~regression_t(){
   if(this->single_run){
     MPI::Finalize();
   } 
-  return;
   if(slave_id>=0){
-    delete [] X;
-    delete [] XT;
-    delete [] all_y;
-    delete [] y;
+    delete random_access_XXI_inv;
+    delete random_access_XXI;
+    delete [] XXI;
+    //delete [] X;
+    //delete [] XT;
+    //delete [] all_y;
+    delete plink_data_X_subset;
   }else{
-    delete [] XX;
-    delete [] XXI_inv;
+    //delete [] XX;
+    //delete [] XXI_inv;
   }
+  delete [] y;
   delete [] snp_node_sizes;
   delete [] snp_node_offsets;
   delete [] subject_node_sizes;
   delete [] subject_node_offsets;
-  delete [] active_set;
+  //delete [] active_set;
   delete [] beta;
   delete [] all_beta;
   delete [] beta_project;
-  delete [] all_constrained_beta;
+  //delete [] all_constrained_beta;
   delete [] constrained_beta;
   delete [] Xbeta;
   delete [] theta;
@@ -79,96 +83,158 @@ regression_t::~regression_t(){
 
 void regression_t::update_lambda(){
 #ifdef USE_MPI
-  bool stripe_method = false;
+  bool debug = true;
   float Xbeta_full[observations];
-  if (stripe_method){
-    float xbeta_theta[sub_observations];
-    if(slave_id>=0){
-      for(int i=0;i<sub_observations;++i){
-        Xbeta[i] = 0;
-        for(int j=0;j<all_variables;++j){
-          //Xbeta[i]+=X_stripe[i*all_variables+j] * all_constrained_beta[j];
-          Xbeta[i]+=X_stripe[i*all_variables+j] * all_beta[j];
-        }
+  if(slave_id>=0){
+    for(int i=0;i<observations;++i)Xbeta_full[i] = 0;
+    if(debug) cerr<<"UPDATE_LAMBDA slave: "<<slave_id<<", observation:";
+    //for(int i=0;i<100;++i){
+    for(int i=0;i<observations;++i){
+      double xb = 0;
+      //cerr<<i<<":";
+      for(int j=0;j<variables;++j){
+        float g = plink_data_X_subset->get_geno(j,i);
+        //float g = 0;
+        if (isnan(g)) cerr<<","<<g<<" "<<beta[j];
+        //Xbeta_full[i]+= g;
+        xb+=g * beta[j];
+        //Xbeta_full[i]+=X[i*variables+j] * beta[j];
       }
-      for(int i=0;i<sub_observations;++i){
-        xbeta_theta[i] = Xbeta[i]-theta[i];
-        //if (total_iterations==1) cerr<<"slave "<<slave_id<<" i "<<i<<" xbeta "<<Xbeta[i]<<" theta "<<theta[i]<<endl;
-      }
+      //cerr<<"Slave "<<slave_id<<" i "<<i<<" X_betafull: "<<Xbeta_full[i]<<endl;
+      Xbeta_full[i] = xb;
+      if(debug && i%1000 == 0) cerr<<" "<<i<<","<<xb;
     }
-    // now assemble xbeta_theta
-    //if(mpi_rank==0) cerr<<"UPDATE_LAMBDA "<<mpi_rank<<endl;
-    MPI_Gatherv(xbeta_theta,sub_observations,MPI_FLOAT,xbeta_theta,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
-    if(mpi_rank==0){
-      mmultiply(XXI_inv,sub_observations,sub_observations,xbeta_theta,1,lambda);
-      for(int i=0;i<sub_observations;++i){
-      }
-    }
+    if(debug) cerr<<endl;
   }else{
-    float xbeta_theta[observations];
-    if(slave_id>=0){
-      for(int i=0;i<observations;++i){
-        Xbeta_full[i] = 0;
-        for(int j=0;j<variables;++j){
-          Xbeta_full[i]+=X[i*variables+j] * beta[j];
+    for(int i=0;i<observations;++i) Xbeta_full[i] = 0;
+  }
+  float xbeta_reduce[observations];
+  MPI_Reduce(Xbeta_full,xbeta_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
+  bool do_landweber = true;
+  if (do_landweber){
+//if(mpi_rank==0){
+    float inverse_lipschitz = 1./config->landweber_constant;
+    cerr<<"INVERSE LIP: "<<inverse_lipschitz<<endl;
+    int iter=0,maxiter = 100;
+    int converged = 0;
+    float tolerance = 1e-8;
+    float xxi_lambda[sub_observations];
+    float new_lambda[observations];
+    
+    while(!converged && iter<maxiter){
+      float norm_diff = 0;
+      if (slave_id>=0){
+        for(int i=0;i<sub_observations;++i){
+          //float xxi_vec[observations];
+          //random_access_XXI->extract_vec(subject_node_offsets[mpi_rank]+i,observations,xxi_vec);
+          double lam = 0;
+          for(int j=0;j<observations;++j){
+            lam+=XXI[i*observations+j]* lambda[j];
+          }
+          xxi_lambda[i] = lam;
         }
- //       cerr<<"Slave "<<slave_id<<" i "<<i<<" X_betafull: "<<Xbeta_full[i]<<endl;
       }
-    }else{
-      for(int i=0;i<observations;++i) Xbeta_full[i] = 0;
+      MPI_Gatherv(xxi_lambda,sub_observations,MPI_FLOAT,xxi_lambda,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+      if(mpi_rank==0){
+        for(int i=0;i<observations;++i){
+          new_lambda[i] = lambda[i] - inverse_lipschitz *
+          (xxi_lambda[i]+theta[i] - xbeta_reduce[i]);
+          if(i<10) cerr<<"XXILAMBDA: "<<xxi_lambda[i]<<" THETA "<<theta[i]<<" XBETA "<<xbeta_reduce[i]<<" NEWLAMBDA: "<<new_lambda[i]<<endl;
+          norm_diff+=(new_lambda[i]-lambda[i])*(new_lambda[i]-lambda[i]);
+          lambda[i] = new_lambda[i];
+        }
+        norm_diff=sqrt(norm_diff);
+        cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
+        converged = (norm_diff<tolerance);
+        ++iter;
+        cerr<<".";
+      }
+      MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
+      MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
+      MPI_Bcast(lambda,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
     }
-    float xbeta_reduce[observations];
-    MPI_Reduce(Xbeta_full,xbeta_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
+    cerr<<"Landweber iterations: "<<iter<<endl;
+//}
+  }else{
     if(mpi_rank==0){
+      cerr<<"Doing non-landweber\n";
+      float xbeta_theta[observations];
       for(int i=0;i<observations;++i){
         xbeta_theta[i] = xbeta_reduce[i]-theta[i];
-//cerr<<"i, xbetareduce, theta:"<<i<<","<<xbeta_reduce[i]<<","<<theta[i]<<endl;
+        //cerr<<"i, xbetareduce, theta:"<<i<<","<<xbeta_reduce[i]<<","<<theta[i]<<endl;
       }
-      mmultiply(XXI_inv,observations,observations,xbeta_theta,1,lambda);
-    }
-  }
+      //mmultiply(XXI_inv,observations,observations,xbeta_theta,1,lambda);
+      //mmultiply(XXI_inv,observations,observations,xbeta_theta,1,lambda);
+      if(debug) cerr<<"UPDATE_LAMBDA computing lambda observation:";
+      for(int i=0;i<observations;++i){
+        float xxii_vec[observations];
+        for(int j=0;j<observations;++j){ xxii_vec[j] = 0; }
+        random_access_XXI_inv->extract_vec(i,observations,xxii_vec);
+        double lam = 0;
+        for(int j=0;j<observations;++j){
+          lam+=xxii_vec[j]* xbeta_theta[j];
+          //if (j<10) cerr<<"i,j,xxii_vec:"<<i<<","<<j<<":"<<xxii_vec[j]<<endl;
+        }
+        lambda[i] = lam;
+        if(debug && i%100 == 0) cerr<<" "<<i<<","<<lam;
+        if(i<10) cerr<<"THETA "<<theta[i]<<" XBETA "<<xbeta_reduce[i]<<" LAMBDA: "<<lambda[i]<<endl;
+      }
+      if(debug) cerr<<endl;
+    } // MPI rank==0
+  } // Landweber condition
   MPI_Bcast(lambda,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 #endif
 }
 
 void regression_t::project_theta(){
+  bool debug = false;
   if(mpi_rank==0){
+    if(debug) cerr<<"PROJECT_THETA:";
     for(int i=0;i<sub_observations;++i){
       theta_project[i] = theta[i]+lambda[i];
+      if(debug && i%100 == 0) cerr<<" "<<i<<","<<theta[i]<<","<<lambda[i];
       //if(i<10)cerr<<"Thetaproject "<<i<<" "<<theta_project[i]<<endl;
  
     }
+    if(debug) cerr<<endl;
   }
   //MPI_Scatterv(theta_project,subject_node_sizes,subject_node_offsets,MPI_FLOAT,theta_project,sub_observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 }
 
 void regression_t::project_beta(){
+  bool debug = true;
   if(slave_id>=0){
+    if(debug) cerr<<"PROJECT_BETA slave "<<slave_id<<" variable:";
     for(int j=0;j<variables;++j){
       if(!in_feasible_region() || constrained_beta[j]!=0){
-        float xt_lambda = 0;
+        double xt_lambda = 0;
         for(int i=0;i<observations;++i){
-          xt_lambda+=XT[j*observations+i] * lambda[i];
+          //float g = 0;
+          float g = plink_data_X_subset->get_geno(j,i);
+          xt_lambda+= g * lambda[i];
+          //xt_lambda+=XT[j*observations+i] * lambda[i];
         }
         beta_project[j] = beta[j]-xt_lambda;
       }else{
         beta_project[j] = 0;
       }
 //        cerr<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
+      if(debug && j % 1000 == 0) cerr<<" "<<j<<","<<beta[j]<<","<<beta_project[j] ;
     }
+    if(debug) cerr<<endl;
   }
 }
 
 void regression_t::update_map_distance(){
 #ifdef USE_MPI
-  theta_distance = 0;
+  float theta_distance = 0;
   if(mpi_rank==0){
     for(int i=0;i<observations;++i){
       float dev = theta[i]-theta_project[i];
        theta_distance+=dev*dev;
     }
   }
-  beta_distance = 0;
+  float beta_distance = 0;
   if(slave_id>=0){
     for(int j=0;j<variables;++j){
       float dev = (beta[j]-beta_project[j]);
@@ -199,29 +265,41 @@ float regression_t::get_map_distance(){
 
 void regression_t::update_theta(){
 #ifdef USE_MPI
+  bool debug = false;
+  if(debug) cerr<<"UPDATE_THETA: Node "<<mpi_rank<<" entering\n";
   if(mpi_rank==0){
     float coeff = 1./(1+dist_func);
+    if(config->verbose) cerr<<"UPDATE_THETA: "<<coeff<<endl;
+    if(debug) cerr<<"Getting observation:";
     for(int i=0;i<sub_observations;++i){
+      //theta[i] = theta_project[i]+coeff*(0-theta_project[i]);
       theta[i] = theta_project[i]+coeff*(y[i]-theta_project[i]);
       //cerr<<"Subject "<<i<<" theta "<<theta[i]<<" projection "<<theta_project[i]<<endl;
+      if(debug && i%100==0) cerr<<" "<<i<<","<<theta[i]<<","<<theta_project[i];
     }
+    if(debug) cerr<<endl;
   }
+  if(debug) cerr<<"UPDATE_THETA: Node "<<mpi_rank<<" exiting\n";
   MPI_Scatterv(theta,subject_node_sizes,subject_node_offsets,MPI_FLOAT,theta,sub_observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 #endif
 }
 
 void regression_t::update_beta(){
 #ifdef USE_MPI
+  bool debug = false;
   //double start = clock();
   MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,constrained_beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
   if(slave_id>=0){
+    if(debug) cerr<<"UPDATE_BETA: Node "<<mpi_rank<<" entering";
     for(int j=0;j<variables;++j){
       if(!in_feasible_region() || constrained_beta[j]!=0){
         beta[j] = .5*(beta_project[j]+constrained_beta[j]);
       }else{
         beta[j] = 0;
       }
+      if(debug && j%1000==0) cerr<<" "<<j<<","<<beta[j]<<","<<beta_project[j];
     }
+    if(debug) cerr<<endl;
   }
   MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
   update_constrained_beta();
@@ -242,7 +320,7 @@ void regression_t::update_constrained_beta(){
     int j=0;
     for(multiset<beta_t,byValDesc>::iterator it=sorted_beta.begin();it!=sorted_beta.end();it++){
       beta_t b = *it;
-      if (j<top_k){
+      if (j<config->top_k){
         constrained_beta[b.index] = b.val;
         //active_indices[active_counter] = b.index;
         //active_vals[active_counter] = b.val;
@@ -255,7 +333,7 @@ void regression_t::update_constrained_beta(){
 
     for(int j=0;j<variables;++j){
       all_beta[j] = beta[j];
-      all_constrained_beta[j] = constrained_beta[j];
+      //all_constrained_beta[j] = constrained_beta[j];
       
       //if(j>=0) cerr<<"All beta"<<j<<" : "<<all_beta[j]<<endl;
     }
@@ -273,30 +351,32 @@ void regression_t::update_constrained_beta(){
 //  }
 }
 
-void regression_t::loss(){
-}
 
-void regression_t::check_constraints(){
-}
 
 bool regression_t::in_feasible_region(){
   float mapdist = get_map_distance();
-  bool ret= (mapdist>0 && mapdist<1e-3);
+  float scaled_mapdist = mapdist/(variables+observations);
+  if(config->verbose) cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" scaled: "<<scaled_mapdist<<endl;
+  bool ret= (scaled_mapdist>0 && scaled_mapdist<config->mapdist_epsilon);
   return ret;
 }
 
 void regression_t::parse_config_line(string & token,istringstream & iss){
   proxmap_t::parse_config_line(token,iss);
-  if (token.compare("TRAIT")==0){
-    iss>>config->traitfile;
-  }else if (token.compare("TASKFILE")==0){
-    iss>>config->taskfile;
+  if (token.compare("FAM_FILE")==0){
+    iss>>config->fam_file;
+  }else if (token.compare("SNP_BED_FILE")==0){
+    iss>>config->snp_bed_file;
+  }else if (token.compare("BIM_FILE")==0){
+    iss>>config->bim_file;
   }else if (token.compare("TOP_K")==0){
     iss>>config->top_k;
-  }else if (token.compare("MARGINAL_FILE_PREFIX")==0){
-    iss>>config->marginal_file_prefix;
-  }else if (token.compare("XXI_INV_FILE_PREFIX")==0){
-    iss>>config->xxi_inv_file_prefix;
+  }else if (token.compare("LANDWEBER_CONSTANT")==0){
+    iss>>config->landweber_constant;
+  }else if (token.compare("XXI_FILE")==0){
+    iss>>config->xxi_file;
+  }else if (token.compare("XXI_INV_FILE")==0){
+    iss>>config->xxi_inv_file;
   }else if (token.compare("BETA_EPSILON")==0){
     iss>>config->beta_epsilon;
   }else if (token.compare("DEBUG_MPI")==0){
@@ -343,52 +423,29 @@ void testsvd(int mpi_rank){
   }
 }
 
-void regression_t::standardize(float * X,int observations,int variables){
-  for(int j=0;j<this->variables;++j){ 
-    float tempvec[observations];
-    float mean = 0;
-    for(int i=0;i<observations;++i){
-      tempvec[i] = X[i*this->variables+j];
-      mean+=tempvec[i];
-    }
-    mean/=observations;
-    float sd = 0;
-    for(int i=0;i<observations;++i){
-      sd+=(tempvec[i]-mean)*(tempvec[i]-mean);
-    }
-    if (sd>0){
-      sd = sqrt(sd/(observations-1));
-      for(int i=0;i<observations;++i){
-        X[i*this->variables+j] = (tempvec[i]-mean)/sd;
-      }
-    }else{
-      for(int i=0;i<observations;++i){
-        X[i*this->variables+j] = 0;
-      }
-    }
-  }
-}
-
 void regression_t::read_dataset(){
 #ifdef USE_MPI
   // figure out the dimensions
   //
-  const char * genofile = config->genofile.data();
-  const char * phenofile = config->traitfile.data();
-  this->observations = linecount(phenofile);
-  this->all_variables = colcount(genofile);
+  const char * snpbedfile = config->snp_bed_file.data();
+  //const char * subjectbedfile = config->subject_bed_file.data();
+  const char * bimfile = config->bim_file.data();
+  const char * famfile = config->fam_file.data();
+
+  this->observations = linecount(famfile);
+  this->all_variables = linecount(bimfile);
   if(config->verbose) cerr<<"Subjects: "<<observations<<" and predictors: "<<all_variables<<endl;
   // taken from Eric Chi's project
   
-  bool single_mask[] = {true};
-  bool full_variable_mask[all_variables];
+  //bool single_mask[] = {true};
+  //bool full_variable_mask[all_variables];
   bool variable_mask[all_variables];
   bool full_subject_mask[observations];
   bool subject_mask[observations];
 
   for(int i=0;i<observations;++i) full_subject_mask[i] = true;
   for(int i=0;i<observations;++i) subject_mask[i] = slave_id<0?true:false;
-  for(int i=0;i<all_variables;++i) full_variable_mask[i] = true;
+  //for(int i=0;i<all_variables;++i) full_variable_mask[i] = true;
   for(int i=0;i<all_variables;++i) variable_mask[i] = slave_id<0?true:false;
 
   vector<vector<int> > snp_indices_vec;
@@ -445,11 +502,11 @@ void regression_t::read_dataset(){
   for(uint i=0;i<slaves;++i){
     snp_node_sizes[i+1] =  snp_indices_vec[i].size();
     snp_node_offsets[i+1] = snp_offset;
-    snp_offset+=snp_node_sizes[i+1];
     subject_node_sizes[i+1] =  observation_indices_vec[i].size();
     subject_node_offsets[i+1] = subject_offset;
+    cerr<<"Offset for rank "<<i+1<<" : SNP: "<<snp_offset<<" subject: "<<subject_offset<<endl;
+    snp_offset+=snp_node_sizes[i+1];
     subject_offset+=subject_node_sizes[i+1];
-    if(config->verbose) cerr<<"Offsets: SNP: "<<snp_offset<<" subject: "<<subject_offset<<endl;
   }
 
   MPI_Type_contiguous(observations,MPI_FLOAT,&floatSubjectsArrayType);
@@ -457,14 +514,29 @@ void regression_t::read_dataset(){
   this->variables=slave_id>=0?snp_indices_vec[slave_id].size():all_variables;
   this->sub_observations=slave_id>=0?observation_indices_vec[slave_id].size():observations;
   if(config->verbose) cerr<<"Node "<<mpi_rank<<" with "<<variables<<" variables.\n";
-  // master and slaves share same number of observations
-  load_matrix_data(config->traitfile.data(),y,observations,1,sub_observations,1,subject_mask, single_mask,true,0);
+  this->y = new float[sub_observations];
+  parse_fam_file(famfile,subject_mask,sub_observations,this->y);
+  //load_matrix_data(config->traitfile.data(),y,observations,1,sub_observations,1,subject_mask, single_mask,true,0);
+  //load_random_access_data(random_access_pheno,y,1,observations,sub_observations,1,subject_mask, single_mask);
+  this->means = new float[variables];
+  this->precisions = new float[variables];
   if(slave_id>=0){
-    load_matrix_data(config->traitfile.data(),all_y,observations,1,observations,1,full_subject_mask, single_mask,true,0);
+    //load_random_access_data(random_access_pheno,all_y,1,observations,observations,1,full_subject_mask, single_mask);
+    //load_matrix_data(config->traitfile.data(),all_y,observations,1,observations,1,full_subject_mask, single_mask,true,0);
+    //parse_fam_file(famfile,full_subject_mask,observations,this->all_y);
+    parse_bim_file(bimfile,variable_mask,variables,means,precisions);
   }
   if(slave_id>=0){
-    load_matrix_data(genofile,X,observations,all_variables,observations,variables, full_subject_mask,variable_mask,true,0);
-    load_matrix_data(genofile,X_stripe,observations,all_variables,observations,all_variables, subject_mask,full_variable_mask,true,0);
+    //cerr<<"Slave "<<slave_id<<" loading genotypes\n";
+    plink_data_X_subset = new plink_data_t(all_variables,variable_mask,observations,full_subject_mask); 
+    plink_data_X_subset->load_data(snpbedfile);
+    plink_data_X_subset->set_mean_precision(plink_data_t::ROWS,means,precisions);
+    //load_random_access_data(random_access_geno,X,all_variables,observations,observations,variables, full_subject_mask,variable_mask);
+    //cerr<<"Slave "<<slave_id<<" loading genotypes stripe\n";
+    //load_random_access_data(random_access_geno,X_stripe,all_variables,observations,observations,all_variables, subject_mask,full_variable_mask);
+    //if (config->verbose) cerr<<"Slave "<<slave_id<<" done loading genotypes\n";
+    //load_matrix_data(genofile,X,observations,all_variables,observations,variables, full_subject_mask,variable_mask,true,0);
+    //load_matrix_data(genofile,X_stripe,observations,all_variables,observations,all_variables, subject_mask,full_variable_mask,true,0);
     // At this point we should standardize all the variables
     //if(config->verbose) cerr<<"Standardizing variables\n";
     //if(config->verbose) cerr.flush();
@@ -474,287 +546,377 @@ void regression_t::read_dataset(){
     //
     bool debugoutput=false;
     if(debugoutput){
-      ostringstream oss;
-      oss<<"X."<<mpi_rank<<".txt";
-      ofstream ofs(oss.str().data());
-      for(int i=0;i<observations;++i){
-        for(int j=0;j<this->variables;++j){
-          if(j) ofs<<"\t";
-          ofs<<X[i*this->variables+j];
-        }
-        ofs<<endl;
-      }
-      ofs.close();
-      ostringstream oss2;
-      oss2<<"X_STRIPE."<<mpi_rank<<".txt";
-      ofstream ofs2(oss2.str().data());
-      for(int i=0;i<sub_observations;++i){
-        for(int j=0;j<all_variables;++j){
-          if(j) ofs2<<"\t";
-          ofs2<<X_stripe[i*all_variables+j];
-        }
-        ofs2<<endl;
-      }
-      ofs2.close();
+//      ostringstream oss;
+//      oss<<"X."<<mpi_rank<<".txt";
+//      ofstream ofs(oss.str().data());
+//      for(int i=0;i<observations;++i){
+//        for(int j=0;j<this->variables;++j){
+//          if(j) ofs<<"\t";
+//          ofs<<X[i*this->variables+j];
+//        }
+//        ofs<<endl;
+//      }
+//      ofs.close();
+//      ostringstream oss2;
+//      oss2<<"X_STRIPE."<<mpi_rank<<".txt";
+//      ofstream ofs2(oss2.str().data());
+//      for(int i=0;i<sub_observations;++i){
+//        for(int j=0;j<all_variables;++j){
+//          if(j) ofs2<<"\t";
+//          ofs2<<X_stripe[i*all_variables+j];
+//        }
+//        ofs2<<endl;
+//      }
+//      ofs2.close();
     }
   }
-  //MPI_Finalize();
-  //exit(0);
+  cerr<<"Read input done\n";
 #endif
 }
 
-float regression_t::compute_marginal_beta(float * xvec){
-  // dot product first;
-  float xxi = 0;
-  float xy = 0;
+void regression_t::parse_fam_file(const char * infile, bool * mask,int len, float * newy){
+  int maskcount = 0;
+  cerr<<"Allocating Y of len "<<len<<endl;
+  //newy = new float[len];
   for(int i=0;i<observations;++i){
-    xxi +=xvec[i]*xvec[i];
-    xy +=xvec[i]*all_y[i];
+    maskcount+=mask[i];
   }
-  if(fabs(xxi)<1e-5) return 0;
-  xxi = 1./xxi;
-  return xxi*xy;
-}
-
-void regression_t::init_marginal_screen(){
-  if(slave_id>=0){
-    ostringstream oss_marginal;
-    oss_marginal<<config->marginal_file_prefix<<"."<<mpi_rank<<".txt";
-    ifstream ifs_marginal(oss_marginal.str().data());
-    if (ifs_marginal.is_open()){
-      if(config->verbose) cerr<<"Using cached copy of marginal betas\n";
-      string line;
-      for(int j=0;j<variables;++j){
-        getline(ifs_marginal,line);
-        istringstream iss(line);
-        iss>>beta[j];
-      }
-      ifs_marginal.close();
-    }else{
-      if(config->verbose) cerr<<"Creating cached copy of marginal betas\n";
-      ofstream ofs_marginal(oss_marginal.str().data());
-      for(int j=0;j<variables;++j){
-        beta[j] = compute_marginal_beta(XT+j*observations);
-        ofs_marginal<<beta[j]<<endl;
-      }
-      ofs_marginal.close();
-    }
-    //update_Xbeta(beta);
-    //float xbeta_norm = 0;
-    //for(int i=0;i<this->observations;++i){
-      //theta_project[i] = theta[i] = y[i];
-      //xbeta_norm+=Xbeta[i]*Xbeta[i];
-      //Xbeta[i] = 0;
-      //theta_project[i] = theta[i] = Xbeta[i];
-    //}
-    //xbeta_norm=sqrt(xbeta_norm);
-    //cerr<<"Xbeta norm for node "<<mpi_rank<<" is "<<xbeta_norm<<endl;
+  //cerr<<"Node "<<mpi_rank<<" FAM file Mask count is "<<maskcount<<" and len is "<<len<<endl;
+  assert(maskcount==len);
+  ifstream ifs(infile);
+  if(!ifs.is_open()){
+    cerr<<"Cannot open fam file "<<infile<<endl;
+    exit(1);
   }
-  for(int j=0;j<variables;++j){
-    constrained_beta[j] = beta_project[j] = beta[j] = 0;
-  }
-
-}
-
-void regression_t::compute_XX(){
-#ifdef USE_MPI
-  // just a stub for now
-  if(mpi_rank==0){
-    bool test = false;
-    if(test){
-      float * X2 = new float[observations*variables];
-      ifstream ifs(config->genofile.data());
-      cerr<<"Reading from "<<config->genofile<<" into "<<observations<<" by "<<variables<<endl;
-      for(int i=0;i<observations;++i){
-        string line;
-        getline(ifs,line);
-        istringstream iss(line);
-        for(int j=0;j<variables;++j){
-          iss>>X2[i*variables+j];
-        } 
-      }
-      ifs.close();
-      mmultiply(X2,observations,variables,XX);
-      delete[]X2;
-      for(int i=0;i<observations;++i){
-        for(int j=0;j<observations;++j){
-        }
-        //cerr<<endl;
-      }
-    }
-  }
-  float anchor[all_variables];
-  ifstream ifs_full;
-  if(mpi_rank==0){
-     ifs_full.open(config->genofile.data());
-  }
+  int j = 0;
   for(int i=0;i<observations;++i){
-    if(mpi_rank==0){
-      string line;
-      getline(ifs_full,line);
-      istringstream iss(line);
-      for(int j=0;j<all_variables;++j){
-        iss>>anchor[j];
-      } 
+    string line;
+    getline(ifs,line);
+    istringstream iss(line);
+    string token;
+    for(int k=0;k<6;++k) iss>>token;
+    float outcome;
+    iss>>outcome;
+    if(mask[i]){
+      newy[j] = outcome;
+      ++j;
     }
-    //cerr<<"Broadcasting at 1st index "<<i<<endl;
-    MPI_Bcast(anchor,all_variables,MPI_FLOAT,0,MPI_COMM_WORLD);
-    float dot_prod[sub_observations];
-    if(slave_id>=0){
-      //cerr<<"Slave "<<slave_id<<" running\n";
-      for(int i2=0;i2<sub_observations;++i2){
-        dot_prod[i2] = 0;
-        for(int j=0;j<all_variables;++j){
-          dot_prod[i2]+=anchor[j]*X_stripe[i2*all_variables+j];
-        }
-      }
-      //cerr<<"Slave "<<slave_id<<" done running\n";
-    }
-    //cerr<<"Gathering\n";
-    MPI_Gatherv(dot_prod,sub_observations,MPI_FLOAT,dot_prod,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
-    if(mpi_rank==0){
-      for(int i2=0;i2<sub_observations;++i2){
-        XX[i*sub_observations+i2] = dot_prod[i2]; 
-      }
-    }
+    
   }
-  if(mpi_rank==0){
-     ifs_full.close();
-  }
-#endif
+  cerr<<"J is "<<j<<endl;
+  ifs.close();
+  
 }
+void regression_t::parse_bim_file(const char * infile, bool * mask,int len, float * means, float * precisions){
+  int maskcount = 0;
+  for(int i=0;i<all_variables;++i){
+    maskcount+=mask[i];
+  }
+  cerr<<"Node "<<mpi_rank<<" BIM file Mask count is "<<maskcount<<" and len is "<<len<<endl;
+  assert(maskcount==len);
+  ifstream ifs(infile);
+  if(!ifs.is_open()){
+    cerr<<"Cannot open bim file "<<infile<<endl;
+    exit(1);
+  }
+  int j = 0;
+  for(int i=0;i<all_variables;++i){
+    string line;
+    getline(ifs,line);
+    istringstream iss(line);
+    string token;
+    for(int k=0;k<6;++k) iss>>token;
+    float mean,precision;
+    iss>>mean>>precision;
+    if(mask[i]) {
+      if (isnan(mean) || isnan(precision)){
+        cerr<<"Something wrong with the input at line: "<<line<<endl;
+        exit(1);
+      }
+      means[j] = mean;
+      precisions[j] = precision;
+      //if(slave_id==1) cerr<<j<<": "<<mean<<endl;
+      ++j;
+    }
+  }
+  //exit(1);
+  //cerr<<"J is "<<j<<endl;
+  ifs.close();
+}
+
+//float regression_t::compute_marginal_beta(float * xvec){
+//  // dot product first;
+//  float xxi = 0;
+//  float xy = 0;
+//  for(int i=0;i<observations;++i){
+//    xxi +=xvec[i]*xvec[i];
+//    xy +=xvec[i]*all_y[i];
+//  }
+//  if(fabs(xxi)<1e-5) return 0;
+//  xxi = 1./xxi;
+//  return xxi*xy;
+//}
+
+//void regression_t::init_marginal_screen(){
+//  if(slave_id>=0){
+//    ostringstream oss_marginal;
+//    oss_marginal<<config->marginal_file_prefix<<"."<<mpi_rank<<".txt";
+//    ifstream ifs_marginal(oss_marginal.str().data());
+//    if (ifs_marginal.is_open()){
+//      if(config->verbose) cerr<<"Using cached copy of marginal betas\n";
+//      string line;
+//      for(int j=0;j<variables;++j){
+//        getline(ifs_marginal,line);
+//        istringstream iss(line);
+//        iss>>beta[j];
+//      }
+//      ifs_marginal.close();
+//    }else{
+//      if(config->verbose) cerr<<"Creating cached copy of marginal betas\n";
+//      ofstream ofs_marginal(oss_marginal.str().data());
+//      for(int j=0;j<variables;++j){
+//        beta[j] = compute_marginal_beta(XT+j*observations);
+//        ofs_marginal<<beta[j]<<endl;
+//      }
+//      ofs_marginal.close();
+//    }
+//    //update_Xbeta(beta);
+//    //float xbeta_norm = 0;
+//    //for(int i=0;i<this->observations;++i){
+//      //theta_project[i] = theta[i] = y[i];
+//      //xbeta_norm+=Xbeta[i]*Xbeta[i];
+//      //Xbeta[i] = 0;
+//      //theta_project[i] = theta[i] = Xbeta[i];
+//    //}
+//    //xbeta_norm=sqrt(xbeta_norm);
+//    //cerr<<"Xbeta norm for node "<<mpi_rank<<" is "<<xbeta_norm<<endl;
+//  }
+//  for(int j=0;j<variables;++j){
+//    constrained_beta[j] = beta_project[j] = beta[j] = 0;
+//  }
+//}
+
+//void regression_t::compute_XX(){
+//#ifdef USE_MPI
+//  int cached = false;
+//  ostringstream oss_xx;
+//  oss_xx<<config->xx_file_prefix<<"."<<mpi_rank<<".bin";
+//  string xx_file = oss_xx.str();
+//  if(mpi_rank==0){
+//    cerr<<"Initializing XX and opening "<<xx_file<<"\n";
+//    ifstream ifs_xx(xx_file.data());
+//    if (ifs_xx.is_open()){
+//      cached = true;
+//      ifs_xx.close();
+//    }
+//  }    
+//  MPI_Bcast(&cached,1,MPI_INT,0,MPI_COMM_WORLD);
+//  if(cached){
+//    if(mpi_rank==0){
+//      if(config->verbose) cerr<<"Using cached copy of X %*% t(X)\n";
+//      random_access_t access(xx_file.data(),observations,observations);
+//      for(int i=0;i<observations;++i){
+//        for(int j=0;j<observations;++j){
+//          XX[i*observations+j] = access.extract_val(i,j);
+//        }
+//      }
+//      if(config->verbose) cerr<<"Done reading X %*% t(X)\n";
+//    }
+//  }else{
+//
+//    if(mpi_rank==0){
+//      if(config->verbose) cerr<<"Cannot find cached copy ("<<xx_file <<") of XX. Computing\n";
+//      bool test = false;
+//      if(test){
+//        float * X2 = new float[observations*variables];
+//        ifstream ifs(config->genofile.data());
+//        cerr<<"Reading from "<<config->genofile<<" into "<<observations<<" by "<<variables<<endl;
+//        for(int i=0;i<observations;++i){
+//          string line;
+//          getline(ifs,line);
+//          istringstream iss(line);
+//          for(int j=0;j<variables;++j){
+//            iss>>X2[i*variables+j];
+//          } 
+//        }
+//        ifs.close();
+//        mmultiply(X2,observations,variables,XX);
+//        delete[]X2;
+//        for(int i=0;i<observations;++i){
+//          for(int j=0;j<observations;++j){
+//          }
+//          //cerr<<endl;
+//        }
+//      }
+//    }
+//    cerr<<"Random access on "<<config->genofile.data()<<endl;
+//    random_access_t access(config->genofile.data(),all_variables,observations);
+//    float anchor[all_variables];
+//    //ifstream ifs_full;
+//    //if(mpi_rank==0){
+//       //ifs_full.open(config->genofile.data());
+//    //}
+//    if(config->verbose) cerr<<"Dot products for observation";
+//    for(int i=0;i<observations;++i){
+//      if(config->verbose) cerr<<" "<<i;
+//      if(mpi_rank==0){
+//        cerr<<".";
+//        for(int j=0;j<all_variables;++j){
+//          anchor[j] = access.extract_val(j,i);
+//        } 
+//        cerr<<".";
+//      }
+//      MPI_Bcast(anchor,all_variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+//      float dot_prod[sub_observations];
+//      if(slave_id>=0){
+//        if (slave_id==0) cerr<<"0";
+//        for(int i2=0;i2<sub_observations;++i2){
+//          dot_prod[i2] = 0;
+//          for(int j=0;j<all_variables;++j){
+//            dot_prod[i2]+=anchor[j]*X_stripe[i2*all_variables+j];
+//          }
+//        }
+//        if (slave_id==0) cerr<<"0";
+//      }
+//      MPI_Gatherv(dot_prod,sub_observations,MPI_FLOAT,dot_prod,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+//      if(mpi_rank==0){
+//        for(int i2=0;i2<sub_observations;++i2){
+//          XX[i*sub_observations+i2] = dot_prod[i2]; 
+//        }
+//      }
+//    }
+//    if(config->verbose) cerr<<endl;
+//
+//    if(mpi_rank==0){
+//      ofstream ofs_xx(xx_file.data());
+//      for(int i=0;i<observations;++i){
+//        float outvec[observations];
+//        for(int j=0;j<observations;++j){
+//          outvec[j] =  XX[i*observations+j];
+//        }
+//        random_access_t::marshall(ofs_xx,outvec,observations);
+//      }
+//      ofs_xx.close();
+//    }
+//  }
+//#endif
+//}
 
 void regression_t::init_xxi_inv(){
 #ifdef USE_MPI
-  int cached = false;
-  ostringstream oss_xxi_inv;
-  oss_xxi_inv<<config->xxi_inv_file_prefix<<"."<<mpi_rank<<".txt";
+  int cached  = 0;
+  //ostringstream oss_xxi_inv;
+  //oss_xxi_inv<<config->xxi_inv_file_prefix<<"."<<mpi_rank<<".bin";
+  string xxi_file = config->xxi_file;
+  string xxi_inv_file = config->xxi_inv_file;
+  //string xxi_file = oss_xxi_inv.str();
+  //cerr<<"Initializing XXI_INV on node "<<mpi_rank<<" and opening "<<xxi_file<<"\n";
   if(mpi_rank==0){
-    ifstream ifs_xxi_inv(oss_xxi_inv.str().data());
+    ifstream ifs_xxi_inv(xxi_inv_file.data());
     if (ifs_xxi_inv.is_open()){
-      cached = true;
+      ++cached;
       ifs_xxi_inv.close();
+    }
+    ifstream ifs_xxi(xxi_file.data());
+    if (ifs_xxi.is_open()){
+      ++cached;
+      ifs_xxi.close();
     }
   }    
   MPI_Bcast(&cached,1,MPI_INT,0,MPI_COMM_WORLD);
-  if(cached){
-    if(mpi_rank==0){
-      ostringstream oss_xxi_inv;
-      oss_xxi_inv<<config->xxi_inv_file_prefix<<"."<<mpi_rank<<".txt";
-      ifstream ifs_xxi_inv(oss_xxi_inv.str().data());
-      if(config->verbose) cerr<<"Using cached copy of singular values and vectors\n";
-      string line;
-      for(int i=0;i<observations;++i){
-        getline(ifs_xxi_inv,line);
-        istringstream issvec(line);
-        for(int j=0;j<observations;++j){
-          issvec>>XXI_inv[i*observations+j];
-        }
+  if(cached==2){
+    if (slave_id>=0){
+      if(config->verbose) cerr<<"Using cached copies of singular values and vectors\n";
+      cerr<<"Using XXI INV file "<<xxi_inv_file.data()<<endl;
+      random_access_XXI_inv = new random_access_t(xxi_inv_file.data(),observations,observations);
+      cerr<<"Using XXI file "<<xxi_file.data()<<endl;
+      random_access_XXI = new random_access_t(xxi_file.data(),observations,observations);
+      for(int i=0;i<sub_observations;++i){
+        random_access_XXI->extract_vec(subject_node_offsets[mpi_rank]+i,observations,XXI+i*observations);
+        if (i%1000==0) cerr<<"Subject "<<i<<" loaded\n";
       }
-      ifs_xxi_inv.close();
+      cerr<<"XXI initialized\n";
     }
   }else{
-    XX = new float[observations * observations];
-    compute_XX();
-    if(config->verbose) cerr<<"Cannot find cached copy of singular values and vectors. Computing\n";
-    if (mpi_rank==0){
-      if(config->verbose) cerr<<"Allocating GSL xx of size "<<observations<<endl;
-      gsl_matrix * tempxx = gsl_matrix_alloc(observations,observations);
-      if(config->verbose) cerr<<"Copying into gsl matrix\n";
-      for(int i=0;i<observations;++i){
-        for(int j=0;j<observations;++j){
-          gsl_matrix_set(tempxx,i,j,XX[i*observations+j]);
-        }
-      }
-      if(config->verbose) cerr<<"Performing eigen decomp\n";
-      if(config->verbose) cerr.flush();
-      //This function allocates a workspace for computing eigenvalues and eigenvectors of n-by-n real symmetric matrices. The size of the workspace is O(4n).
-      gsl_eigen_symmv_workspace * eigen_work =  gsl_eigen_symmv_alloc (observations);
-      gsl_matrix * tempv = gsl_matrix_alloc(observations,observations);
-      gsl_vector * temps = gsl_vector_alloc(observations);
-      //This function computes the eigenvalues and eigenvectors of the real symmetric matrix A. Additional workspace of the appropriate size must be provided in w. The diagonal and lower triangular part of A are destroyed during the computation, but the strict upper triangular part is not referenced. The eigenvalues are stored in the vector eval and are unordered. The corresponding eigenvectors are stored in the columns of the matrix evec. For example, the eigenvector in the first column corresponds to the first eigenvalue. The eigenvectors are guaranteed to be mutually orthogonal and normalised to unit magnitude.
-        
-      int code = gsl_eigen_symmv(tempxx, temps, tempv, eigen_work);
-      if (code!=0) if(config->verbose) cerr<<"Returning nonzero code in eigendecomp\n";
-      gsl_matrix * tempvdi = gsl_matrix_alloc(observations,observations);
-      for(int i=0;i<observations;++i){
-        for(int j=0;j<observations;++j){
-          //if(config->verbose) cerr<<"Eigen "<<j<<","<<i<<":"<<gsl_matrix_get(tempv,j,i)<<endl;
-          //if(config->verbose) cerr.flush();
-          float vdi = gsl_matrix_get(tempv,i,j)/(1.+gsl_vector_get(temps,j));
-          gsl_matrix_set(tempvdi,i,j,vdi);
-        }
-      }
-      if(mpi_rank==-1){
-        ofstream ofs_rtest1("r_test1.txt");
-        ofstream ofs_rtest2("r_test2.txt");
-        ofstream ofs_rtest3("r_test3.txt");
-        for(int i=0;i<observations;++i){
-          for(int j=0;j<observations;++j){
-            if (j) ofs_rtest1<<"\t";
-            ofs_rtest1<<gsl_matrix_get(tempxx,i,j);
-            if (i==j) ofs_rtest2<<gsl_vector_get(temps,i);
-            if (j) ofs_rtest3<<"\t";
-            ofs_rtest3<<gsl_matrix_get(tempv,i,j);
-            //ofs_rtest2<<gsl_matrix_get(tempvdi,i,j);
-          }
-          ofs_rtest1<<endl;
-          ofs_rtest2<<endl;
-          ofs_rtest3<<endl;
-        }
-        ofs_rtest1.close();
-        ofs_rtest2.close();
-        ofs_rtest3.close();
-        exit(1);
-      }
-      //
-      //Function: void gsl_eigen_symmv_free (gsl_eigen_symmv_workspace * w)
-      //This function frees the memory associated with the workspace w.
-      //
-      gsl_matrix_free(tempxx);
-      gsl_vector_free(temps);
-      gsl_eigen_symmv_free(eigen_work);
-
-      //if(config->verbose) cerr<<"Performing SVD\n";
-      //if(config->verbose) cerr.flush();
-      //cerr<<"Variables: "<<variables<<" observations: "<<observations<<endl;
-      //gsl_matrix * tempv_svd = gsl_matrix_alloc(variables,variables);
-      //gsl_vector * temps_svd = gsl_vector_alloc(variables);
-      //gsl_vector * work_svd  = gsl_vector_alloc(variables);
-      //gsl_linalg_SV_decomp(tempx,tempv_svd,temps_svd,work_svd);
-      //gsl_vector_free(work_svd);
-      for(int j=0;j<this->variables;++j){
-        for(int i=0;i<observations;++i){
-          //if(config->verbose) cerr<<"SVD "<<j<<","<<i<<":"<<gsl_matrix_get(tempx,i,j)<<endl;
-          //if(config->verbose) cerr.flush();
-//          //float vdi = gsl_matrix_get(tempx,i,j)/(1.+gsl_vector_get(temps,j));
-//          //gsl_matrix_set(tempvdi,i,j,vdi);
-        }
-      }
-      //gsl_matrix_free(tempv_svd);
-      //gsl_vector_free(temps_svd);
-      if(config->verbose) cerr<<"Computing VDIV\n";
-      if(config->verbose) cerr.flush();
-      gsl_matrix * tempvdiv = gsl_matrix_alloc(observations,observations);
-      gsl_blas_dgemm(CblasNoTrans,CblasTrans,1,tempvdi,tempv,0,tempvdiv);
-      gsl_matrix_free(tempvdi);
-      gsl_matrix_free(tempv);
-      if(config->verbose) cerr<<"Writing to file "<<oss_xxi_inv.str()<<"\n";
-      if(config->verbose) cerr.flush();
-      ofstream ofs_xxi_inv(oss_xxi_inv.str().data());
-      for(int i=0;i<observations;++i){
-        for(int j=0;j<observations;++j){
-          if (j) ofs_xxi_inv<<"\t";
-          XXI_inv[i*observations+j] = gsl_matrix_get(tempvdiv,i,j);
-          ofs_xxi_inv<<XXI_inv[i*observations+j];
-        }
-        ofs_xxi_inv<<endl;
-      }
-      ofs_xxi_inv.close();
-      gsl_matrix_free(tempvdiv);
-    }
-  }
-  //MPI_Bcast(XXI_inv,observations*observations,MPI_FLOAT,0,MPI_COMM_WORLD);
+    if(config->verbose) cerr<<"Cannot find cached copy ("<<xxi_file <<") of singular values and vectors. Please pre-compute this. Exiting.\n";
+    //XX = new float[observations * observations];
+    MPI_Finalize();
+    exit(0);
+//    compute_XX();
+//    if (mpi_rank==0){
+//      if(config->verbose) cerr<<"Allocating GSL xx of size "<<observations<<endl;
+//      gsl_matrix * tempxx = gsl_matrix_alloc(observations,observations);
+//      for(int i=0;i<observations;++i){
+//        for(int j=0;j<observations;++j){
+//          gsl_matrix_set(tempxx,i,j,XX[i*observations+j]);
+//        }
+//      }
+//      if(config->verbose) cerr<<"Performing eigen decomp\n";
+//      if(config->verbose) cerr.flush();
+//      //This function allocates a workspace for computing eigenvalues and eigenvectors of n-by-n real symmetric matrices. The size of the workspace is O(4n).
+//      gsl_eigen_symmv_workspace * eigen_work =  gsl_eigen_symmv_alloc (observations);
+//      gsl_matrix * tempv = gsl_matrix_alloc(observations,observations);
+//      gsl_vector * temps = gsl_vector_alloc(observations);
+//      //This function computes the eigenvalues and eigenvectors of the real symmetric matrix A. Additional workspace of the appropriate size must be provided in w. The diagonal and lower triangular part of A are destroyed during the computation, but the strict upper triangular part is not referenced. The eigenvalues are stored in the vector eval and are unordered. The corresponding eigenvectors are stored in the columns of the matrix evec. For example, the eigenvector in the first column corresponds to the first eigenvalue. The eigenvectors are guaranteed to be mutually orthogonal and normalised to unit magnitude.
+//        
+//      int code = gsl_eigen_symmv(tempxx, temps, tempv, eigen_work);
+//      if (code!=0) if(config->verbose) cerr<<"Returning nonzero code in eigendecomp\n";
+//      gsl_matrix * tempvdi = gsl_matrix_alloc(observations,observations);
+//      for(int i=0;i<observations;++i){
+//        for(int j=0;j<observations;++j){
+//          float vdi = gsl_matrix_get(tempv,i,j)/(1.+gsl_vector_get(temps,j));
+//          gsl_matrix_set(tempvdi,i,j,vdi);
+//        }
+//      }
+//      if(mpi_rank==-1){
+//        ofstream ofs_rtest1("r_test1.txt");
+//        ofstream ofs_rtest2("r_test2.txt");
+//        ofstream ofs_rtest3("r_test3.txt");
+//        for(int i=0;i<observations;++i){
+//          for(int j=0;j<observations;++j){
+//            if (j) ofs_rtest1<<"\t";
+//            ofs_rtest1<<gsl_matrix_get(tempxx,i,j);
+//            if (i==j) ofs_rtest2<<gsl_vector_get(temps,i);
+//            if (j) ofs_rtest3<<"\t";
+//            ofs_rtest3<<gsl_matrix_get(tempv,i,j);
+//          }
+//          ofs_rtest1<<endl;
+//          ofs_rtest2<<endl;
+//          ofs_rtest3<<endl;
+//        }
+//        ofs_rtest1.close();
+//        ofs_rtest2.close();
+//        ofs_rtest3.close();
+//        exit(1);
+//      }
+//      //
+//      //Function: void gsl_eigen_symmv_free (gsl_eigen_symmv_workspace * w)
+//      //This function frees the memory associated with the workspace w.
+//      //
+//      gsl_matrix_free(tempxx);
+//      gsl_vector_free(temps);
+//      gsl_eigen_symmv_free(eigen_work);
+//
+//      if(config->verbose) cerr<<"Computing VDIV\n";
+//      if(config->verbose) cerr.flush();
+//      gsl_matrix * tempvdiv = gsl_matrix_alloc(observations,observations);
+//      gsl_blas_dgemm(CblasNoTrans,CblasTrans,1,tempvdi,tempv,0,tempvdiv);
+//      gsl_matrix_free(tempvdi);
+//      gsl_matrix_free(tempv);
+//      if(config->verbose) cerr<<"Writing to binary file "<<xxi_file<<"\n";
+//      if(config->verbose) cerr.flush();
+//      ofstream ofs_xxi_inv(xxi_file.data());
+//      for(int i=0;i<observations;++i){
+//        float outvec[observations];
+//        for(int j=0;j<observations;++j){
+//          outvec[j] =  XXI_inv[i*observations+j] = gsl_matrix_get(tempvdiv,i,j);
+//        }
+//        random_access_t::marshall(ofs_xxi_inv,outvec,observations);
+//      }
+//      ofs_xxi_inv.close();
+//      gsl_matrix_free(tempvdiv);
+//    } // if mpi_rank==0
+  } // if cached/not cached
 #endif
 }
 
@@ -768,7 +930,9 @@ void regression_t::init(string config_file){
   this->mpi_rank = MPI::COMM_WORLD.Get_rank();
   this->slave_id = mpi_rank-1;
   config->beta_epsilon = 1e-3;
-  config->marginal_file_prefix = "marginal";
+  //config->marginal_file_prefix = "marginal";
+  //config->xxi_inv_file_prefix = "xxi_inv";
+  //config->xx_file_prefix = "xx";
 #endif
   proxmap_t::init(config_file);
   if (this->slave_id>=0)  config->verbose = false;
@@ -797,35 +961,37 @@ void regression_t::allocate_memory(){
   read_dataset();
 
   if(slave_id>=0){
+    XXI = new float[sub_observations * observations];
+    
     // Also, set up X transpose too, a constant matrix variable
-    this->XT = new float[this->variables*observations];
-    for(int j=0;j<this->variables;++j){
-      for(int i=0;i<observations;++i){
-        XT[j*observations+i] = X[i*this->variables+j];
-      }
-    }
+//    this->XT = new float[this->variables*observations];
+//    for(int j=0;j<this->variables;++j){
+//      for(int i=0;i<observations;++i){
+//        XT[j*observations+i] = X[i*this->variables+j];
+//      }
+//    }
   }else{
-    XXI_inv = new float[observations*observations];
+//    XXI_inv = new float[observations*observations];
   }
   // this procedure will do the SVD at the master and then broadcast to slaves
   init_xxi_inv();
   // ALLOCATE MEMORY FOR ESTIMATED PARAMETERS
   this->last_residual = 1e10;
   this->residual = 0;
-  this->active_set_size = 0;
-  this->active_set = new bool[this->variables];
+  //this->active_set_size = 0;
+  //this->active_set = new bool[this->variables];
   this->beta = new float[this->variables];
   this->all_beta = new float[this->all_variables];
   this->last_beta = new float[this->variables];
   this->beta_project = new float[this->variables];
-  this->all_constrained_beta = new float[this->all_variables];
+  //this->all_constrained_beta = new float[this->all_variables];
   this->constrained_beta = new float[this->variables];
   this->lambda = new float[observations];
   this->Xbeta = new float[sub_observations];
+  // the LaGrange multiplier
   this->theta = new float[sub_observations];
   this->theta_project = new float[sub_observations];
-  init_marginal_screen();
-  // the LaGrange multiplier
+  //init_marginal_screen();
   proxmap_t::allocate_memory();
 #endif
 }
@@ -866,7 +1032,7 @@ float regression_t::infer_rho(){
         if(last_rho>=config->rho_max) {
           config->rho_max*=config->rho_scale_fast;
         }
-        new_rho = last_rho<config->rho_max?last_rho * config->rho_scale_slow:last_rho;
+        new_rho = last_rho<config->rho_max?last_rho + config->rho_scale_slow:last_rho;
         if (in_feasible_region()) { // the projections are feasible
           track_residual = true;
           cerr<<"INFER_RHO: enabling residual tracking\n";
@@ -892,25 +1058,43 @@ float regression_t::infer_rho(){
 
 void regression_t::initialize(){
   if (mpi_rank==0){
-    ofs_debug<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
+    if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
   if (this->mu == 0){
-    this->top_k = config->top_k;
+    //this->top_k = variables;
+    //this->top_k = config->top_k;
     for(int j=0;j<this->all_variables;++j){
       all_beta[j] = 0;
-      all_constrained_beta[j] = 0;
+      //all_constrained_beta[j] = 0;
     }
     for(int j=0;j<this->variables;++j){
       last_beta[j] = beta[j] = 0;
       constrained_beta[j] = 0;
       beta_project[j] = 0;
     }
+    if(mpi_rank==0){
+      for(int i=0;i<this->observations;++i){
+        lambda[i] = 0;
+      }
+    }
     for(int i=0;i<this->sub_observations;++i){
-      float init_val = y[i];
+      float init_val = 0;
+      //cerr<<"INIT VAL: "<<init_val<<endl;
+      //float init_val = y[i];
       theta[i] = theta_project[i] = init_val;
     }
     this->map_distance = 0;
+    //cerr<<"INITIALIZE: getting objective"<<endl;
+    //evaluate_obj();
+  }else{
+    if (in_feasible_region()){
+      //this->top_k = config->top_k;
+    }else{
+      //this->top_k-=10;
+      //if (this->top_k < config->top_k) top_k = config->top_k;
+    }
   }
+  
 }
 
 bool regression_t::finalize_inner_iteration(){
@@ -919,17 +1103,17 @@ bool regression_t::finalize_inner_iteration(){
   if(mpi_rank==0){
     float active_norm = 0;
     float inactive_norm = 0;
-    active_set_size = 0;
+    //active_set_size = 0;
     for(int j=0;j<variables;++j){
-      active_set[j]=fabs(beta[j])>config->beta_epsilon;
-      active_set_size+=active_set[j];
+      //active_set[j]=fabs(beta[j])>config->beta_epsilon;
+      //active_set_size+=active_set[j];
       if(constrained_beta[j]==0){
         inactive_norm+=fabs(beta[j]);
       }else{
         active_norm+=fabs(beta[j]);
       }
     }
-    if (config->verbose) cerr<<"active set size "<<active_set_size<<", inactive norm: "<<inactive_norm<<" active norm: "<<active_norm<<endl;
+    if (config->verbose) cerr<<"active norm: "<<active_norm<<" inactive norm: "<<inactive_norm<<endl;
     //proceed = (mu==0 || active_set_size>config->top_k);
   }
   //print_output();
@@ -978,7 +1162,8 @@ bool regression_t::finalize_iteration(){
       last_beta[j] = beta[j];
     }
     diff_norm = sqrt(diff_norm);
-    if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<endl;
+    float scaled_diff_norm = diff_norm/variables;
+    if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" scaled: "<<scaled_diff_norm<<endl;
     bool abort = false;
     if(rho<config->rho_min){ 
       cerr<<"FINALIZE_ITERATION: Rho shrunk to minimum. Aborting\n";
@@ -993,7 +1178,7 @@ bool regression_t::finalize_iteration(){
 //      }
 //    }
     //proceed = total_iterations<30000;
-    proceed = (get_map_distance() > 1e-6  || diff_norm>1e-5) && (!abort);
+    proceed = (!in_feasible_region() || scaled_diff_norm>config->beta_epsilon) && (!abort);
     //proceed = get_map_distance() > 1e-6  || active_set_size>this->top_k;
   }
   MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
@@ -1017,21 +1202,6 @@ bool regression_t::finalize_iteration(){
   
 
 void regression_t::iterate(){
-//  if(mpi_rank==0){
-//    int rows = 3;int cols = 3;
-//    float mat[] = {1,2,1,1,2,3,4,2,66};
-//    float outmat[rows*cols];
-//    invert(mat,outmat,rows,cols);
-//    for(int i=0;i<rows;++i){
-//      for(int j=0;j<cols;++j){
-//        if(j) cerr<<"\t";
-//        cerr<<outmat[i*cols+j];
-//      }
-//      cerr<<endl;
-//    }
-//  }
-//  MPI_Finalize();
-//  exit(0);
   //cerr<<"ITERATE: "<<mpi_rank<<endl;
   update_lambda();
   project_theta();
@@ -1039,29 +1209,28 @@ void regression_t::iterate(){
   update_map_distance();
   update_theta();
   update_beta();
-  update_map_distance();
+  //update_map_distance();
   ++total_iterations;
 }
 
 void regression_t::print_output(){
   if(mpi_rank==0 ){
   //if(mpi_rank==0 && active_set_size<=config->top_k){
-    cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" active size: "<<active_set_size<<" mapdist: "<<this->map_distance<<endl;
-    cerr<<"ACTIVE?\tINDEX\tBETA\n";
+    cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" mapdist: "<<this->map_distance<<endl;
+    cerr<<"INDEX\tBETA(of "<<config->top_k<<")\n";
     //for(int j=0;j<10;++j){
     for(int j=0;j<variables;++j){
-      if (active_set[j] && constrained_beta[j]!=0){
-        cerr<<"+";
-        cerr<<"\t"<<j<<"\t"<<beta[j]<<endl;
+      if (constrained_beta[j]!=0){
+        cerr<<j<<"\t"<<beta[j]<<endl;
       }
-      if (active_set[j]){
+      //if (active_set[j]){
         //cerr<<"+";
         //cerr<<"\t"<<j<<"\t"<<beta[j]<<endl;
-      }else{
+      //}else{
         //cerr<<"-";
         //cerr<<"\t"<<j<<"\t"<<beta[j]<<endl;
         //beta[j] = 0;
-      }
+      //}
     }
     ofs_debug<<"Done!\n";
   }
@@ -1113,54 +1282,83 @@ float regression_t::evaluate_obj(){
   return obj;
 }
 
-void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
-#ifdef USE_MPI
-  ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
-  ofs_debug.flush();
-  if(output_rows==0||output_cols==0) return;
-  mat = new float[output_rows*output_cols];
+// this function will do transpose a random access file into the target data matrix, subject to masks
 
-  ifstream ifs(mat_file);
-  if (!ifs.is_open()){
-    ofs_debug<<"Cannot open file "<<mat_file<<endl;
-    if (file_req){
-      ofs_debug<<"File "<<mat_file<<" is required. Program will exit now.\n";
-      MPI_Finalize();
-      exit(1);
-    }else{
-      ofs_debug<<"File is optional.  Will default values to "<<defaultVal<<endl;
-      for(int i=0;i<output_rows*output_cols;++i) mat[i] = defaultVal;
-      return;
-    }
-  }
-  string line;
-  int output_row = 0;
-  for(int i=0;i<input_rows;++i){
-    getline(ifs,line);
-    if (row_mask[i]){
-      istringstream iss(line);
-      int output_col = 0;
-      for(int j=0;j<input_cols;++j){
-        float val;
-        iss>>val;
-        if (col_mask[j]){
-           if (output_row>=output_rows || output_col>=output_cols) {
-             ofs_debug<<mpi_rank<<": Assigning element at "<<output_row<<" by "<<output_col<<endl;
-             ofs_debug<<mpi_rank<<": Out of bounds\n";
-             MPI_Finalize();
-             exit(1);
-           }
-           mat[output_row*output_cols+output_col] = val;
-           ++output_col;
-        }
-      }
-      ++output_row;
-    }
-  }
-  ofs_debug<<"MPI rank "<<mpi_rank<<" successfully read in "<<mat_file<<endl;
-  ifs.close();
-#endif
-}
+//void regression_t::load_random_access_data(random_access_t *   random_access, float * & mat, int in_variables, int in_observations,int out_observations, int out_variables, bool * observations_mask, bool * variables_mask){
+//  
+//#ifdef USE_MPI
+//  if(out_observations==0||out_variables==0) return;
+//  bool read_vec = out_observations==1?false:true;
+//  mat = new float[out_observations*out_variables];
+//  int out_variable = 0;
+//  for(int i=0;i<in_variables;++i){
+//    if (variables_mask[i]){
+//      float row_buff[in_observations];
+//      if(read_vec) random_access->extract_vec(i,in_observations,row_buff);
+//      //cerr<<"Out variable "<<out_variable<<" done\n";
+//      int out_observation = 0;
+//      for(int j=0;j<in_observations;++j){
+//        if (observations_mask[j]){
+//          //if(slave_id==0) cerr<<" at "<<i<<","<<j<<endl;
+//          float val = read_vec?row_buff[j]:random_access->extract_val(i,j);
+//          mat[out_observation*out_variables+out_variable] = val;
+//          ++out_observation;
+//        }
+//      }
+//      ++out_variable;
+//    }
+//  }
+//#endif
+//}
+
+//void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
+//#ifdef USE_MPI
+//  ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
+//  ofs_debug.flush();
+//  if(output_rows==0||output_cols==0) return;
+//  mat = new float[output_rows*output_cols];
+//
+//  ifstream ifs(mat_file);
+//  if (!ifs.is_open()){
+//    ofs_debug<<"Cannot open file "<<mat_file<<endl;
+//    if (file_req){
+//      ofs_debug<<"File "<<mat_file<<" is required. Program will exit now.\n";
+//      MPI_Finalize();
+//      exit(1);
+//    }else{
+//      ofs_debug<<"File is optional.  Will default values to "<<defaultVal<<endl;
+//      for(int i=0;i<output_rows*output_cols;++i) mat[i] = defaultVal;
+//      return;
+//    }
+//  }
+//  string line;
+//  int output_row = 0;
+//  for(int i=0;i<input_rows;++i){
+//    getline(ifs,line);
+//    if (row_mask[i]){
+//      istringstream iss(line);
+//      int output_col = 0;
+//      for(int j=0;j<input_cols;++j){
+//        float val;
+//        iss>>val;
+//        if (col_mask[j]){
+//           if (output_row>=output_rows || output_col>=output_cols) {
+//             ofs_debug<<mpi_rank<<": Assigning element at "<<output_row<<" by "<<output_col<<endl;
+//             ofs_debug<<mpi_rank<<": Out of bounds\n";
+//             MPI_Finalize();
+//             exit(1);
+//           }
+//           mat[output_row*output_cols+output_col] = val;
+//           ++output_col;
+//        }
+//      }
+//      ++output_row;
+//    }
+//  }
+//  ofs_debug<<"MPI rank "<<mpi_rank<<" successfully read in "<<mat_file<<endl;
+//  ifs.close();
+//#endif
+//}
 
 int regression_t::get_qn_parameter_length(){
   int len = 0;
@@ -1197,7 +1395,7 @@ void regression_t::store_qn_current_param(float * params){
   }
   MPI_Scatterv(theta,subject_node_sizes,subject_node_offsets,MPI_FLOAT,theta,sub_observations,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
-  update_constrained_beta();
+  //update_constrained_beta();
 #endif
 }
 

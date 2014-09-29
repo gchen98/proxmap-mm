@@ -35,6 +35,7 @@ proxmap_t::~proxmap_t(){
 
 
 void proxmap_t::parse_config_line(string & token,istringstream & iss){
+//cerr<<"token: "<<token<<"\n";
   if (token.compare("USE_GPU")==0){
     iss>>config->use_gpu;
   }else if (token.compare("USE_CPU")==0){
@@ -186,6 +187,23 @@ int proxmap_t::linecount(const char * filename){
   return count;
 }
 
+void proxmap_t::load_into_matrix(const char * filename,int * & mat,int rows, int cols){
+  ifstream ifs(filename);
+  if (!ifs.is_open()){
+    cerr<<"Cannot open "<<filename<<" for matrix load.\n";
+    exit(1);
+  }
+  string line;
+  for(int i=0;i<rows;++i){
+    getline(ifs,line);
+    istringstream iss(line);
+    for(int j=0;j<cols;++j){
+      iss>>mat[i*cols+j];
+    }
+  }
+  ifs.close();
+}
+
 void proxmap_t::load_into_matrix(const char * filename,float * & mat,int rows, int cols){
   ifstream ifs(filename);
   if (!ifs.is_open()){
@@ -211,6 +229,8 @@ float proxmap_t::norm(float * mat, int size){
   }
   return sqrt(norm);
 }
+
+
 
 void proxmap_t::mmultiply(float *  a,int a_rows, int a_cols, float *  c){
   for(int outrow = 0;outrow<a_rows;++outrow){
@@ -462,13 +482,14 @@ void proxmap_t::run(){
     rho_distance_ratio = config->rho_distance_ratio;
     //epsilon = 0.1;
     initialize();
+    //cerr<<"Verbosity: "<<config->verbose<<endl;
     //rho = rho_min;
     iter_rho_epsilon = 0;
     bool converged = false;
     last_obj=1e10;
     int burnin = config->burnin;
     int max_iter = config->max_iter;
-    if(verbose) cerr<<"Max iterations: "<<max_iter<<endl;
+    if(config->verbose) cerr<<"Max iterations: "<<max_iter<<endl;
     bool qn_matrices_init= false;
     bool qn_last_iterate_valid = false;  
     int qn_column_counter = 0;
@@ -480,7 +501,7 @@ void proxmap_t::run(){
     bool proceed_inner = true;
     bypass_downhill_check = false;
     while(proceed_inner && !converged && iter_rho_epsilon<max_iter){
-      if(verbose)cerr<<"Inner iterate: "<<iter_rho_epsilon<<endl;
+      if(config->verbose)cerr<<"Inner iterate: "<<iter_rho_epsilon<<endl;
       if (iter_rho_epsilon>=burnin){
         obj = iterate_with_obj(); 
         if(obj<last_obj){

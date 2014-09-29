@@ -20,6 +20,7 @@ public:
   cluster_t();
   ~cluster_t();
 private:
+  //static const float MISSING = 120573;
   void init_opencl();
   void parse_config_line(string & key, istringstream & iss);
   void iterate();

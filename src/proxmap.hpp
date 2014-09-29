@@ -44,6 +44,7 @@ struct config_t{
   string kernel_base;
   string genofile;
   string output_path;
+
   // convex cluster settings
   string weightsfile;
   int datapoints;
@@ -52,13 +53,19 @@ struct config_t{
   float print_threshold;
   string geno_format;
   string geno_order;
+
   // regression settings
+  //int total_observations;
+  //int total_variables;
   float beta_epsilon;
-  string marginal_file_prefix;
-  string xxi_inv_file_prefix;
-  string traitfile;
-  string taskfile;
-  float nu;  // penalty parameter
+  float landweber_constant;
+  string xxi_file;
+  string xxi_inv_file;
+  string snp_bed_file;
+  //string subject_bed_file;
+  string bim_file;
+  string fam_file;
+  //float nu;  // penalty parameter
   int top_k;
   bool debug_mpi;
   bool single_run;
@@ -81,7 +88,9 @@ public:
   static void invert(gsl_matrix * mat, gsl_matrix * outmat, gsl_permutation * perm);
   static int colcount(const char * filename);
   static int linecount(const char * filename);
-  static void load_into_matrix(const char * filename,float * & mat,int rows, int cols);
+  static void  load_into_matrix(const char * filename,float * & mat,int rows, int cols);
+  static void  load_into_matrix(const char * filename,int * & mat,int rows, int cols);
+//  template<typename T,int size> static void load_into_matrix(const char * filename,T(&)[size],int rows, int cols);
   static void mmultiply(float *  a,int a_rows, int a_cols, float *  b,int b_cols, float *  c);
   static void mmultiply(float *  a,int a_rows, int a_cols, float *  c);
   static float norm(float * mat,int size);

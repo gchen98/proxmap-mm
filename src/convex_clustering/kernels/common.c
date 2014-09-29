@@ -23,6 +23,7 @@ __const int p,
 __constant float * dist_func,
 __constant float * rho,
 __global float * U,
+__global float * U_prev,
 __global float * rawdata,
 __global float * U_project
 ){
@@ -30,9 +31,10 @@ __global float * U_project
   int person = get_group_id(1);
   int threadindex = get_local_id(0);
   if (var_chunk*BLOCK_WIDTH+threadindex<p){
+    float raw = rawdata[person*p+var_chunk*BLOCK_WIDTH+threadindex];
+    if (raw==MISSING) raw = U_prev[person*p+var_chunk*BLOCK_WIDTH+threadindex];
     U[person*p+var_chunk*BLOCK_WIDTH+threadindex] = 
-    dist_func[0]/(dist_func[0]+rho[0])*
-    rawdata[person*p+var_chunk*BLOCK_WIDTH+threadindex] +
+    dist_func[0]/(dist_func[0]+rho[0])* raw +
     rho[0]/(dist_func[0]+rho[0])*
     U_project[person*p+var_chunk*BLOCK_WIDTH+threadindex];
   }
@@ -155,6 +157,7 @@ __const int variable_blocks,
 __global int * offsets,
 __global float * rawdata,
 __global float * U,
+__global float * U_prev,
 __global float * U_project,
 __global float * weights,
 __global float * V_project_coeff,
@@ -173,7 +176,9 @@ __local float * local_norm2
     for(int block = 0;block<variable_blocks;++block){
       int j = block*BLOCK_WIDTH+threadindex;
       if(j<p){
-        float dev = rawdata[i1*p+j]-U[i1*p+j];
+        float raw = rawdata[i1*p+j];
+        if (raw==MISSING) raw = U_prev[i1*p+j]; 
+        float dev = raw-U[i1*p+j];
         //dev = rawdata[i1*p+j];
         local_norm1[threadindex]+=dev*dev;
         barrier(CLK_LOCAL_MEM_FENCE);  

@@ -206,15 +206,15 @@ void l0_reg_t::run(int top_k) {
   }else{
     //cerr<<"proxmap_t::mmultiply(Xt,variables,observations,A)\n";
     proxmap_t::mmultiply(Xt,variables,observations,A);
-    ofstream ofs("A_mat.txt");
+    //ofstream ofs("A_mat.txt");
     for(int j=0;j<variables;++j){
       for(int k=0;k<variables;++k){
-        if(k) ofs<<"\t";
-        ofs<<A[j*variables+k];
+        //if(k) ofs<<"\t";
+        //ofs<<A[j*variables+k];
       }
-      ofs<<endl;
+      //ofs<<endl;
     }
-    ofs.close();
+    //ofs.close();
   }
   //proxmap_t::mmultiply(Xt,variables,observations,X,variables,A);
   //b = - t(X) %*% Y;

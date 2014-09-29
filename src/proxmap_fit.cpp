@@ -2,12 +2,13 @@
 #include"regression/regression.hpp"
 #include"regression/regression_with_theta.hpp"
 #include"convex_clustering/cluster.hpp"
+#include"genetree/genetree.hpp"
 
 int main(int argc, char * argv[]){
   try{
     int arg=0;
     if (argc<3){
-      cerr<<"Usage: <analysis: [cluster|regression]> <configfile>\n";
+      cerr<<"Usage: <analysis: [cluster|regression|genetree]> <configfile>\n";
       return 1;
     }
     string analysis = argv[++arg];
@@ -18,7 +19,9 @@ int main(int argc, char * argv[]){
     }else if (analysis.compare("regression")==0){ 
       proxmap = new regression_t(true);
     }else if (analysis.compare("regression_with_theta")==0){ 
-      proxmap = new regression_with_theta_t(true);
+      //proxmap = new regression_with_theta_t(true);
+    }else if (analysis.compare("genetree")==0){ 
+      proxmap = new genetree_t();
     }
     if (proxmap!=NULL){
       proxmap->init(configfile);

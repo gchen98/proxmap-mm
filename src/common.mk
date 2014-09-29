@@ -1,4 +1,4 @@
-use_mpi=0
+use_mpi=1
 use_gpu=0
 
 #compiler
@@ -12,9 +12,11 @@ GSL_LIB_FLAGS = -lgsl -lgslcblas
 MPI_LIB_FLAGS = -L/usr/lib64/openmpi/lib
 OPENCL_INC_FLAGS = -I$(ATI)/include
 OPENCL_LIB_FLAGS = -L$(ATI)/lib/x86_64 -lOpenCL
+GCHEN_INC_FLAGS = -I$(HOME)/include
+GCHEN_LIB_FLAGS = -L$(HOME)/shared_objects -lgwasutil
 
-CFLAGS = -Wall -g $(BOOST_INC_FLAGS) $(GSL_INC_FLAGS) 
-LINKFLAGS = -g -lm $(BOOST_LIB_FLAGS) $(GSL_LIB_FLAGS)
+CFLAGS = -Wall -g $(GCHEN_INC_FLAGS) $(BOOST_INC_FLAGS) $(GSL_INC_FLAGS) 
+LINKFLAGS = -g -lm $(GCHEN_LIB_FLAGS) $(BOOST_LIB_FLAGS) $(GSL_LIB_FLAGS)
 
 
 ifeq ($(use_gpu),1)

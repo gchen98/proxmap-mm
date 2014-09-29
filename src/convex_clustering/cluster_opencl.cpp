@@ -44,6 +44,7 @@ void cluster_t::init_opencl(){
     cerr<<"GPU Buffers created\n";
     // initialize anything here
     writeToBuffer(buffer_U,n*p,U,"buffer_U");
+    writeToBuffer(buffer_U_prev,n*p,U_prev,"buffer_U_prev");
     writeToBuffer(buffer_U_project,n*p,U_project,"buffer_U_project");
     writeToBuffer(buffer_U_project_orig,n*p,U_project_orig,"buffer_U_project_orig");
     writeToBuffer(buffer_rawdata,n*p,rawdata,"buffer_rawdata");
@@ -63,6 +64,7 @@ void cluster_t::init_opencl(){
     setArg(kernel_update_U,arg,*buffer_dist_func,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_rho,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_U,"kernel_update_U");
+    setArg(kernel_update_U,arg,*buffer_U_prev,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_rawdata,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_U_project,"kernel_update_U");
     arg = 0;
@@ -116,6 +118,7 @@ void cluster_t::init_opencl(){
     setArg(kernel_evaluate_obj,arg,*buffer_offsets,"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,*buffer_rawdata,"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,*buffer_U,"kernel_evaluate_obj");
+    setArg(kernel_evaluate_obj,arg,*buffer_U_prev,"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,*buffer_U_project,"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,*buffer_weights,"kernel_evaluate_obj");
     setArg(kernel_evaluate_obj,arg,*buffer_V_project_coeff,"kernel_evaluate_obj");

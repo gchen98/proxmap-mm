@@ -5,4 +5,5 @@
 // the following can be used for the nVidia Fermi
 #define SMALL_BLOCK_WIDTH 16
 #define BLOCK_WIDTH 16
+#define MISSING 120573
 

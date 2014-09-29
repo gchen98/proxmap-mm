@@ -15,6 +15,7 @@ float * distances;
 int n,p,annot_cols;
 string annot_file;
 float annot_weight;
+const float MISSING=120573;
 
 void read_input(){
   string line;
@@ -63,9 +64,14 @@ void store_distances(){
     for(int i2=i1+1;+i2<n;++i2){
       // get Euclidean distance
       float data_dist = 0;
+      int nonmissing = 0;
       for(int j=0;j<p;++j){
-        data_dist+=(data[i1*p+j]-data[i2*p+j])*(data[i1*p+j]-data[i2*p+j]);
+        if (data[i1*p+j]!=MISSING && data[i2*p+j]!=MISSING){
+          data_dist+=(data[i1*p+j]-data[i2*p+j])*(data[i1*p+j]-data[i2*p+j]);
+          ++nonmissing;
+        }
       }
+      if (nonmissing) data_dist/=nonmissing;
       temp_data[i1*n+i2] = data_dist;
       if (data_dist>data_max) data_max = data_dist;
       float annot_dist = 0;
@@ -81,6 +87,7 @@ void store_distances(){
       // for testing
       //if(annot_dist>0) annot_dist += 1;
       float data_dist = temp_data[i1*n+i2]/data_max;
+      if (data_dist == 0) data_dist = 1;
       float annot_dist = temp_annot[i1*n+i2]/annot_max;
       distances[i1*n+i2] = distances[i2*n+i1] = annot_weight*annot_dist+(1.-annot_weight)*data_dist;
       if (debug) cerr<<"DISTANCE INDEX "<<i1<<","<<i2<<" IS "<<distances[i1*n+i2]<<" with data dist: "<<data_dist<<", annot dist: "<<annot_dist<<endl;

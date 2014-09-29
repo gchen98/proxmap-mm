@@ -1,7 +1,7 @@
 include common.mk
 
-DIRS=convex_clustering regression
-SUB_OBJS=convex_clustering/*.o regression/*.o
+DIRS=convex_clustering regression genetree
+SUB_OBJS=convex_clustering/*.o regression/*.o genetree/*.o
 
 OBJS=proxmap.o proxmap_opencl.o cl_templates.o
 
@@ -10,7 +10,7 @@ CROSS_VALIDATION=../bin/cross_validation
 
 all::
 	for dir in $(DIRS); do(cd $$dir; make $1 || exit 1) || exit 1;    done; 
-all:: proxmap_fit cross_validation
+all:: proxmap_fit 
 
 
 proxmap_fit: $(OBJS) proxmap_fit.o

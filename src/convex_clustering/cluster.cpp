@@ -71,6 +71,7 @@ void cluster_t::allocate_memory(){
   norm2_arr = new float[triangle_dim];
   //if(config->verbose) cerr<<"Reading in input files\n";
   if(config->geno_format.compare("verbose")==0){
+    //int test[5];
     load_into_matrix(config->genofile.data(),rawdata,n,p);
   }else if(config->geno_format.compare("compact")==0){
     load_compact_geno(config->genofile.data());
@@ -80,14 +81,6 @@ void cluster_t::allocate_memory(){
   }
   weights = new float[triangle_dim];
   V_project_coeff = new float[triangle_dim];
-  //cerr<<"Reading in input files\n";
-  if(config->geno_format.compare("verbose")==0){
-    load_into_matrix(config->genofile.data(),rawdata,n,p);
-  }else if(config->geno_format.compare("compact")==0){
-    load_compact_geno(config->genofile.data());
-  }else {
-    throw "Invalid genoformat specified.";
-  }
   large = 1e10;
   iter = 0;
   if(run_gpu){
@@ -107,8 +100,9 @@ void cluster_t::initialize(){
       for(int i=0;i<n;++i){
         for(int j=0;j<p;++j){
           //U[i*p+j] = i;
-          U[i*p+j] = rawdata[i*p+j];
-          U_project_orig[i*p+j] =  U_project[i*p+j] = rawdata[i*p+j];
+          U[i*p+j] = rawdata[i*p+j]==MISSING?0:rawdata[i*p+j];
+          U_prev[i*p+j] = U[i*p+j];
+          U_project_orig[i*p+j] =  U_project[i*p+j] = U[i*p+j];
           if (debug_cpu && i==(n-10) && j>(p-10)){
             cerr<<"CPU: U_project_orig "<<i<<","<<j<<": "<<U_project_orig[i*p+j]<<endl;
           }
@@ -431,7 +425,7 @@ void cluster_t::update_projection(){
               //float u =  (U[index*p+j]+all_summation[thread])/(1.+neighbors);
               U_project[index*p+j] = u;
               sub_fnorm[index*variable_blocks+block] +=u*u;
-              if(debug) cerr<<"UPDATE_PROJECTION: index "<<index<<", var "<<j<<" Neighbors: "<<neighbors<<" U point: "<<U[index*p+j]<<" U projection: "<<U_project[index*p+j]<<endl;
+//              if(config->verbose && rawdata[index*p+j]==MISSING) cerr<<"UPDATE_PROJECTION: index "<<index<<", var "<<j<<" right "<<right_summation[thread]<<" left "<<left_summation[thread]<<" all "<<all_summation[thread]<<" neighbors: "<<neighbors<<" U point: "<<U[index*p+j]<<" U projection: "<<U_project[index*p+j]<<endl;
             }
           }
            //if (isnan(fnorm)||isinf(fnorm)) exit(1);
@@ -624,11 +618,22 @@ void cluster_t::update_u(){
     int mixes = 0;
     for(int i=0;i<n;++i){
       for(int j=0;j<p;++j){
-        U[i*p+j] = dist_func*rawdata[i*p+j]/(dist_func+rho) + rho*U_project[i*p+j]/(dist_func+rho);
-        if (debug && (i<10 || i>(n-10))) cerr<<"UPDATE_U: index: "<<i<<" geno: "<<rawdata[i*p+j]<<" projection: "<<U_project[i*p+j]<<" U: "<<U[i*p+j]<<endl;
-        geno_changes+=(U[i*p+j]!=rawdata[i*p+j]);
+        float raw = rawdata[i*p+j];
+        if (rawdata[i*p+j]==MISSING){
+          raw = U_prev[i*p+j];
+        }
+        //float raw = rawdata[i*p+j]==MISSING?U_prev[i*p+j]:rawdata[i*p+j];
+        U[i*p+j] = dist_func*raw/(dist_func+rho) + rho*U_project[i*p+j]/(dist_func+rho);
+        if (rawdata[i*p+j]==MISSING){
+          if(config->verbose){
+            cerr<<"UPDATE_U: missing at "<<i<<","<<j<<" with raw "<<raw<<" and projection: "<<U_project[i*p+j] <<" U is now "<<U[i*p+j]<<endl;
+        
+          }
+        }
+        if (debug && (i<10 || i>(n-10))) cerr<<"UPDATE_U: index: "<<i<<" geno: "<<raw<<" projection: "<<U_project[i*p+j]<<" U: "<<U[i*p+j]<<endl;
+        geno_changes+=(U[i*p+j]!=raw);
         U_changes+=(U[i*p+j]!=U_project[i*p+j]);
-        mixes+=((U[i*p+j]!=U_project[i*p+j]) &&(U[i*p+j]!=rawdata[i*p+j]));
+        mixes+=((U[i*p+j]!=U_project[i*p+j]) &&(U[i*p+j]!=raw));
       }
     }
     bool debug_cpu = false;
@@ -822,7 +827,8 @@ float cluster_t::evaluate_obj(){
             for(int t=0;t<BLOCK_WIDTH;++t){
               int j = k*BLOCK_WIDTH+t;
               if (j<p){
-                float dev = rawdata[i1*p+j]-U[i1*p+j];
+                float raw = rawdata[i1*p+j]==MISSING?U_prev[i1*p+j]:rawdata[i1*p+j];
+                float dev = raw-U[i1*p+j];
                 //dev = rawdata[i1*p+j]; 
                 norm1_temp[t]+=dev*dev;
               }
