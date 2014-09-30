@@ -40,6 +40,7 @@ private:
   bool track_residual;
   float last_residual;
   float residual;
+  int BLOCK_WIDTH;
 
   // dimensions
   int sub_observations; // is all subjects for master, and subset for slaves
@@ -73,12 +74,18 @@ private:
 
   // IO variables
   plink_data_t * plink_data_X_subset;
+  packedgeno_t * packedgeno_snpmajor;
+  int packedstride_snpmajor;
+  plink_data_t * plink_data_X_subset_subjectmajor;
+  packedgeno_t * packedgeno_subjectmajor;
+  int packedstride_subjectmajor;
   random_access_t * random_access_XXI_inv;
   random_access_t * random_access_XXI;
   ofstream ofs_debug;
 
   void parse_config_line(string & key, istringstream & iss);
   void read_dataset();
+  inline float c2g(char c,int shifts);
   void parse_fam_file(const char * infile, bool * mask,int len,float * y);
   void parse_bim_file(const char * infile, bool * mask,int len,float * mean, float * sd);
   void init_xxi_inv();
@@ -114,3 +121,7 @@ private:
   //void load_random_access_data(random_access_t *   random_access, float * & mat, int in_variables, int in_observations,int out_observations, int out_variables, bool * observation_mask, bool * variables_mask);
 };
 
+inline float regression_t::c2g(char c,int shifts){
+  int val = ((int)c)>>(2*shifts) & 3;
+  return plink_data_t::plink_geno_mapping[val];
+}

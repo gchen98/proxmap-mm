@@ -12,6 +12,7 @@
 #include<gsl/gsl_linalg.h>
 #include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
+#include"cl_headers.h"
 #include"regression.hpp"
 
 struct beta_t{
@@ -51,6 +52,7 @@ regression_t::~regression_t(){
     //delete [] XT;
     //delete [] all_y;
     delete plink_data_X_subset;
+    delete plink_data_X_subset_subjectmajor;
   }else{
     //delete [] XX;
     //delete [] XXI_inv;
@@ -92,15 +94,48 @@ void regression_t::update_lambda(){
     for(int i=0;i<observations;++i){
       double xb = 0;
       //cerr<<i<<":";
-      for(int j=0;j<variables;++j){
-        float g = plink_data_X_subset->get_geno(j,i);
-        //float g = 0;
-        if (isnan(g)) cerr<<","<<g<<" "<<beta[j];
-        //Xbeta_full[i]+= g;
-        xb+=g * beta[j];
-        //Xbeta_full[i]+=X[i*variables+j] * beta[j];
+      // emulate what we would do on the GPU
+      int SMALL_BLOCK_WIDTH = 32;
+      int chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);
+      packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
+      float subset_geno[BLOCK_WIDTH];
+      for(int chunk=0;chunk<chunks;++chunk){  // each chunk is 512 variables
+        //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
+        for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+          // load 32 into this temporary array
+          packedbatch[threadindex] = packedgeno_subjectmajor[i*
+          packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+        }
+        for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+          // expand 32 elements into 512 genotypes
+          int t = 0;
+          for(int b=0;b<4;++b){
+            for(int c=0;c<4;++c){
+              subset_geno[threadindex*16+t] = 
+              c2g(packedbatch[threadindex].geno[b],c);
+              ++t;
+            }
+          }
+        }
+        for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
+          int var_index = chunk*BLOCK_WIDTH+threadindex;
+          if(var_index<variables){
+            float g=(subset_geno[threadindex]-means[var_index])*precisions[var_index];
+            //if(slave_id==0)cerr<<" "<<var_index<<":"<<g;
+            xb+=g * beta[var_index];
+          }
+        }
       }
-      //cerr<<"Slave "<<slave_id<<" i "<<i<<" X_betafull: "<<Xbeta_full[i]<<endl;
+      //if(slave_id==0)cerr<<endl;
+      // gold standard way
+      for(int j=0;j<variables;++j){
+        //float g = plink_data_X_subset_subjectmajor->get_geno(i,j);
+        //float r = plink_data_X_subset_subjectmajor->get_raw_geno(i,j);
+        //if(slave_id==0)cerr<<" "<<j<<":"<<g;
+        //if (isnan(g)) cerr<<","<<g<<" "<<beta[j];
+        //xb+=g * beta[j];
+      }
+      //if(slave_id==0)cerr<<endl;
       Xbeta_full[i] = xb;
       if(debug && i%1000 == 0) cerr<<" "<<i<<","<<xb;
     }
@@ -114,7 +149,7 @@ void regression_t::update_lambda(){
   if (do_landweber){
 //if(mpi_rank==0){
     float inverse_lipschitz = 1./config->landweber_constant;
-    cerr<<"INVERSE LIP: "<<inverse_lipschitz<<endl;
+    //cerr<<"INVERSE LIP: "<<inverse_lipschitz<<endl;
     int iter=0,maxiter = 100;
     int converged = 0;
     float tolerance = 1e-8;
@@ -139,16 +174,16 @@ void regression_t::update_lambda(){
         for(int i=0;i<observations;++i){
           new_lambda[i] = lambda[i] - inverse_lipschitz *
           (xxi_lambda[i]+theta[i] - xbeta_reduce[i]);
-          if(i<10) cerr<<"XXILAMBDA: "<<xxi_lambda[i]<<" THETA "<<theta[i]<<" XBETA "<<xbeta_reduce[i]<<" NEWLAMBDA: "<<new_lambda[i]<<endl;
+          if(i<0) cerr<<"XXILAMBDA: "<<xxi_lambda[i]<<" THETA "<<theta[i]<<" XBETA "<<xbeta_reduce[i]<<" NEWLAMBDA: "<<new_lambda[i]<<endl;
           norm_diff+=(new_lambda[i]-lambda[i])*(new_lambda[i]-lambda[i]);
           lambda[i] = new_lambda[i];
         }
         norm_diff=sqrt(norm_diff);
-        cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
         converged = (norm_diff<tolerance);
         ++iter;
         cerr<<".";
       }
+      //cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
       MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
       MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
       MPI_Bcast(lambda,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -208,12 +243,49 @@ void regression_t::project_beta(){
     for(int j=0;j<variables;++j){
       if(!in_feasible_region() || constrained_beta[j]!=0){
         double xt_lambda = 0;
+        // emulate what we would do on the GPU
+        int SMALL_BLOCK_WIDTH = 32;
+        int chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
+        packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
+        float subset_geno[BLOCK_WIDTH];
+        for(int chunk=0;chunk<chunks;++chunk){  // each chunk is 512 variables
+          //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
+          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+            // load 32 into this temporary array
+            packedbatch[threadindex] = packedgeno_snpmajor[j*
+            packedstride_snpmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+          }
+          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+            // expand 32 elements into 512 genotypes
+            int t = 0;
+            for(int b=0;b<4;++b){
+              for(int c=0;c<4;++c){
+                subset_geno[threadindex*16+t] = 
+                c2g(packedbatch[threadindex].geno[b],c);
+                ++t;
+              }
+            }
+          }
+          for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
+            int obs_index = chunk*BLOCK_WIDTH+threadindex;
+            if(obs_index<variables){
+              float g=(subset_geno[threadindex]-means[j])*precisions[j];
+              //if(slave_id==0)cerr<<" "<<obs_index<<":"<<g;
+              xt_lambda+= g * lambda[obs_index];
+              //xb+=g * beta[obs_index];
+            }
+          }
+        }
+        //if(slave_id==0)cerr<<endl;
+        // gold standard
         for(int i=0;i<observations;++i){
           //float g = 0;
-          float g = plink_data_X_subset->get_geno(j,i);
-          xt_lambda+= g * lambda[i];
+          //float g = plink_data_X_subset->get_geno(j,i);
+          //if(slave_id==0)cerr<<" "<<i<<":"<<g;
+          //xt_lambda+= g * lambda[i];
           //xt_lambda+=XT[j*observations+i] * lambda[i];
         }
+        //if(slave_id==0)cerr<<endl;
         beta_project[j] = beta[j]-xt_lambda;
       }else{
         beta_project[j] = 0;
@@ -531,6 +603,10 @@ void regression_t::read_dataset(){
     plink_data_X_subset = new plink_data_t(all_variables,variable_mask,observations,full_subject_mask); 
     plink_data_X_subset->load_data(snpbedfile);
     plink_data_X_subset->set_mean_precision(plink_data_t::ROWS,means,precisions);
+    plink_data_X_subset->transpose(plink_data_X_subset_subjectmajor);
+    cerr<<"Transposed!\n";
+    this->packedgeno_snpmajor = plink_data_X_subset->get_packed_geno(this->packedstride_snpmajor);
+    this->packedgeno_subjectmajor = plink_data_X_subset_subjectmajor->get_packed_geno(this->packedstride_subjectmajor);
     //load_random_access_data(random_access_geno,X,all_variables,observations,observations,variables, full_subject_mask,variable_mask);
     //cerr<<"Slave "<<slave_id<<" loading genotypes stripe\n";
     //load_random_access_data(random_access_geno,X_stripe,all_variables,observations,observations,all_variables, subject_mask,full_variable_mask);
@@ -992,6 +1068,7 @@ void regression_t::allocate_memory(){
   this->theta = new float[sub_observations];
   this->theta_project = new float[sub_observations];
   //init_marginal_screen();
+  this->BLOCK_WIDTH = plink_data_t::BLOCK_WIDTH;
   proxmap_t::allocate_memory();
 #endif
 }
@@ -1203,11 +1280,17 @@ bool regression_t::finalize_iteration(){
 
 void regression_t::iterate(){
   //cerr<<"ITERATE: "<<mpi_rank<<endl;
+  if(mpi_rank==0) cerr<<"updatelambda\n";
   update_lambda();
+  if(mpi_rank==0) cerr<<"project theta\n";
   project_theta();
+  if(mpi_rank==0) cerr<<"project beta\n";
   project_beta();
+  if(mpi_rank==0) cerr<<"update map 1\n";
   update_map_distance();
+  if(mpi_rank==0) cerr<<"update theta\n";
   update_theta();
+  if(mpi_rank==0) cerr<<"update beta\n";
   update_beta();
   //update_map_distance();
   ++total_iterations;
