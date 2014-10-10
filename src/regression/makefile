@@ -1,6 +1,7 @@
 include ../common.mk
 
-OBJS=regression.o
+OBJS=regression.o 
+
 
 compile: $(OBJS)
 

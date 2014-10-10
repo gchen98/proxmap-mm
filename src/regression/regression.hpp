@@ -1,9 +1,13 @@
+#include<assert.h>
 #include<set>
 #ifdef USE_MPI
 #include<mpi.h>
 #endif
 #include<random_access.hpp>
 #include<plink_data.hpp>
+#ifdef USE_GPU
+#include<ocl_wrapper.hpp>
+#endif
 
 using namespace std;
 
@@ -40,6 +44,7 @@ private:
   bool track_residual;
   float last_residual;
   float residual;
+  float landweber_constant;
   int BLOCK_WIDTH;
 
   // dimensions
@@ -47,9 +52,12 @@ private:
   int observations; // is all subjects for all nodes
   int variables; // is all snps for master, and subset for slaves
   int all_variables; // is all snps for all nodes
+  
+  float bestAIC;
 
   float * all_y; // outcome same dimension on all nodes
   float * y; // dimension dependent variable for outcome
+  float * Xbeta_full;
 
   float * means;
   float * precisions;
@@ -61,16 +69,10 @@ private:
   float * all_beta; // same dimension on all nodes
 
   float * lambda; // defined on master with dimension observations
-  float * Xbeta; // these have length dependent on sub observations
   float * theta; // these have length dependent on sub observations
   float * theta_project; // these have length dependent on sub observations
 
-  //float * X; // stores a sub problem (snp major)
-  //float * XT; // transpose of sub problem
-  //float * XX; // this stores XX^T
   float * XXI; // the cached data of (X^T %*% X + I)^-1
-  //float * XXI_inv; // the cached data of (X^T %*% X + I)^-1
-  //float * X_stripe; // stores a sub problem by subject major
 
   // IO variables
   plink_data_t * plink_data_X_subset;
@@ -81,7 +83,13 @@ private:
   int packedstride_subjectmajor;
   random_access_t * random_access_XXI_inv;
   random_access_t * random_access_XXI;
+#ifdef USE_GPU
+  ocl_wrapper_t * ocl_wrapper;
+#endif
   ofstream ofs_debug;
+  // chunks for GPU workspaces
+  int subject_chunks; // for SNP major
+  int snp_chunks; // for subject major
 
   void parse_config_line(string & key, istringstream & iss);
   void read_dataset();
@@ -100,6 +108,7 @@ private:
   bool in_feasible_region();
   void print_output();
   void initialize();
+  void init_gpu();
   float infer_rho();
   float infer_epsilon();
   
@@ -122,6 +131,7 @@ private:
 };
 
 inline float regression_t::c2g(char c,int shifts){
-  int val = ((int)c)>>(2*shifts) & 3;
+  int val = (static_cast<int>(c))>>(2*shifts) & 3;
+  assert(val<4);
   return plink_data_t::plink_geno_mapping[val];
 }

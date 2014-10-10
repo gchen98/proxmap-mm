@@ -59,6 +59,7 @@ struct config_t{
   //int total_variables;
   float beta_epsilon;
   float landweber_constant;
+  float max_landweber;
   string xxi_file;
   string xxi_inv_file;
   string snp_bed_file;

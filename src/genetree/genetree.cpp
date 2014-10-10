@@ -113,7 +113,7 @@ void genetree_t::infer_y_matrix(){
     node_arr[i] = new node_t;
     node_arr[i]->row_index = i;
     for(int j=0;j<features;++j){
-      node_arr[i]->annotation[j] = Y[i*features+j];
+      node_arr[i]->annotation[j] = static_cast<int>(Y[i*features+j]);
     }
     for(int anc=i-1;anc>=0;--anc){
       if(A[i*genes+anc]==1){

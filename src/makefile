@@ -14,7 +14,7 @@ all:: proxmap_fit
 
 
 proxmap_fit: $(OBJS) proxmap_fit.o
-	$(LINKER) -o $(PROXMAP_FIT) $(LINKFLAGS) $(OBJS) proxmap_fit.o $(SUB_OBJS)
+	$(LINKER) -o $(PROXMAP_FIT) $(LINKFLAGS) $(OBJS) proxmap_fit.o $(SUB_OBJS) 
 
 cross_validation: $(OBJS) cross_validation.o
 	$(LINKER) -o $(CROSS_VALIDATION) $(LINKFLAGS) $(OBJS) cross_validation.o $(SUB_OBJS)

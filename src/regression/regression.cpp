@@ -15,6 +15,8 @@
 #include"cl_headers.h"
 #include"regression.hpp"
 
+const int SMALL_BLOCK_WIDTH = 32;
+
 struct beta_t{
   int index;
   float val;
@@ -44,31 +46,31 @@ regression_t::~regression_t(){
   if(this->single_run){
     MPI::Finalize();
   } 
+
   if(slave_id>=0){
     delete random_access_XXI_inv;
     delete random_access_XXI;
     delete [] XXI;
-    //delete [] X;
-    //delete [] XT;
-    //delete [] all_y;
     delete plink_data_X_subset;
     delete plink_data_X_subset_subjectmajor;
-  }else{
-    //delete [] XX;
-    //delete [] XXI_inv;
+#ifdef USE_GPU
+    if(this->run_gpu) delete ocl_wrapper;
+#endif
   }
+
   delete [] y;
+  delete [] Xbeta_full;
+  delete[] means;
+  delete[] precisions;
   delete [] snp_node_sizes;
   delete [] snp_node_offsets;
   delete [] subject_node_sizes;
   delete [] subject_node_offsets;
-  //delete [] active_set;
   delete [] beta;
+  delete [] last_beta;
   delete [] all_beta;
   delete [] beta_project;
-  //delete [] all_constrained_beta;
   delete [] constrained_beta;
-  delete [] Xbeta;
   delete [] theta;
   delete [] theta_project;
   delete [] lambda;
@@ -85,61 +87,99 @@ regression_t::~regression_t(){
 
 void regression_t::update_lambda(){
 #ifdef USE_MPI
-  bool debug = true;
-  float Xbeta_full[observations];
+  //bool run_cpu = false;
+  //bool run_gpu = true;
+  bool debug = false;
+  //float Xbeta_full[observations];
   if(slave_id>=0){
-    for(int i=0;i<observations;++i)Xbeta_full[i] = 0;
-    if(debug) cerr<<"UPDATE_LAMBDA slave: "<<slave_id<<", observation:";
-    //for(int i=0;i<100;++i){
-    for(int i=0;i<observations;++i){
-      double xb = 0;
-      //cerr<<i<<":";
-      // emulate what we would do on the GPU
-      int SMALL_BLOCK_WIDTH = 32;
-      int chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);
-      packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
-      float subset_geno[BLOCK_WIDTH];
-      for(int chunk=0;chunk<chunks;++chunk){  // each chunk is 512 variables
-        //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
-        for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
-          // load 32 into this temporary array
-          packedbatch[threadindex] = packedgeno_subjectmajor[i*
-          packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+    bool debug_gpu = (run_cpu && slave_id==0);
+    if(run_gpu){
+#ifdef USE_GPU
+      ocl_wrapper->write_to_buffer("beta",variables,beta);
+      ocl_wrapper->run_kernel("update_lambda",BLOCK_WIDTH*snp_chunks,observations,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->run_kernel("reduce_xbeta_chunks",BLOCK_WIDTH,observations,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_full);
+      if(debug_gpu){
+        //float Xbeta_chunks[observations*snp_chunks];
+        float Xbeta_temp[observations];
+        //ocl_wrapper->read_from_buffer("Xbeta_chunks",observations*snp_chunks,Xbeta_chunks);
+        ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_temp);
+        cerr<<"debug gpu update_lambda GPU:";
+        for(int i=0;i<observations;++i){
+          //float xbeta = 0;
+          for(int j=0;j<snp_chunks;++j){
+            //if(i<10)cerr<<" "<<i<<","<<j<<":"<<Xbeta_chunks[i*snp_chunks+j];
+            //xbeta+=Xbeta_chunks[i*snp_chunks+j];
+          }
+          if(i>(observations-10))cerr<<" "<<i<<":"<<Xbeta_temp[i];
+          //if(i<10)cerr<<" "<<i<<":"<<xbeta;
         }
-        for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
-          // expand 32 elements into 512 genotypes
-          int t = 0;
-          for(int b=0;b<4;++b){
-            for(int c=0;c<4;++c){
-              subset_geno[threadindex*16+t] = 
-              c2g(packedbatch[threadindex].geno[b],c);
-              ++t;
+        cerr<<endl;
+      }
+#endif
+    } // if run gpu
+
+    if(run_cpu){
+      if(debug) cerr<<"UPDATE_LAMBDA slave: "<<slave_id<<", observation:";
+      //for(int i=0;i<100;++i){
+      if (debug_gpu) cerr<<"debug gpu update_lambda CPU:";
+      for(int i=0;i<observations;++i){
+        float xb = 0;
+        //cerr<<i<<":";
+        // emulate what we would do on the GPU
+        packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
+        float subset_geno[BLOCK_WIDTH];
+        for(int chunk=0;chunk<snp_chunks;++chunk){  // each chunk is 512 variables
+          //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
+          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+            // load 32 into this temporary array
+            if(chunk*SMALL_BLOCK_WIDTH+threadindex<packedstride_subjectmajor){
+              packedbatch[threadindex] = packedgeno_subjectmajor[i*
+              packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+            }
+          }
+          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+            // expand 32 elements into 512 genotypes
+            int t = 0;
+            for(int b=0;b<4;++b){
+              for(int c=0;c<4;++c){
+                subset_geno[threadindex*16+t] = 
+                c2g(packedbatch[threadindex].geno[b],c);
+                ++t;
+              }
+            }
+          }
+          for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
+            int var_index = chunk*BLOCK_WIDTH+threadindex;
+            if(var_index<variables){
+              float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[var_index])*precisions[var_index];
+              //float g=(subset_geno[threadindex]);
+              //float g2 = plink_data_X_subset_subjectmajor->get_raw_geno(i,var_index);
+              //if(g!=g2) cerr<<"update-lambda Mismatch at SNP: "<<var_index<<" obs "<<i<<": "<<g<<","<<g2<<endl;
+              xb+=g * beta[var_index];
+              //if(slave_id==0)cerr<<" "<<var_index<<":"<<g;
+              //xb2+=beta[var_index]*means[var_index]*precisions[var_index];
+  
             }
           }
         }
-        for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
-          int var_index = chunk*BLOCK_WIDTH+threadindex;
-          if(var_index<variables){
-            float g=(subset_geno[threadindex]-means[var_index])*precisions[var_index];
-            //if(slave_id==0)cerr<<" "<<var_index<<":"<<g;
-            xb+=g * beta[var_index];
-          }
+        //if(slave_id==0)cerr<<endl;
+        // gold standard way
+        for(int j=0;j<variables;++j){
+          //float g = plink_data_X_subset_subjectmajor->get_geno(i,j);
+          //xb+=g * beta[j];
+          //float r = plink_data_X_subset_subjectmajor->get_raw_geno(i,j);
+          //if(slave_id==0)cerr<<" "<<j<<":"<<g;
+          //if (isnan(g)) cerr<<","<<g<<" "<<beta[j];
         }
+        //if(slave_id==0)cerr<<endl;
+        Xbeta_full[i] = xb;
+        if(debug_gpu && i>(observations-10)) cerr<<" "<<i<<":"<<xb;
+        if(debug && i%1000 == 0) cerr<<" "<<i<<","<<xb;
       }
-      //if(slave_id==0)cerr<<endl;
-      // gold standard way
-      for(int j=0;j<variables;++j){
-        //float g = plink_data_X_subset_subjectmajor->get_geno(i,j);
-        //float r = plink_data_X_subset_subjectmajor->get_raw_geno(i,j);
-        //if(slave_id==0)cerr<<" "<<j<<":"<<g;
-        //if (isnan(g)) cerr<<","<<g<<" "<<beta[j];
-        //xb+=g * beta[j];
-      }
-      //if(slave_id==0)cerr<<endl;
-      Xbeta_full[i] = xb;
-      if(debug && i%1000 == 0) cerr<<" "<<i<<","<<xb;
-    }
-    if(debug) cerr<<endl;
+      if(debug) cerr<<endl;
+      if(debug_gpu) cerr<<endl;
+    } // if run_cpu
   }else{
     for(int i=0;i<observations;++i) Xbeta_full[i] = 0;
   }
@@ -148,47 +188,75 @@ void regression_t::update_lambda(){
   bool do_landweber = true;
   if (do_landweber){
 //if(mpi_rank==0){
-    float inverse_lipschitz = 1./config->landweber_constant;
-    //cerr<<"INVERSE LIP: "<<inverse_lipschitz<<endl;
-    int iter=0,maxiter = 100;
+    float inverse_lipschitz = 2./this->landweber_constant;
+    //cerr<<"LIPSCHITZ CONSTANT: "<<this->landweber_constant<<endl;
+    float norm_diff = 0;
+    int iter=0,maxiter = static_cast<int>(config->max_landweber);
     int converged = 0;
     float tolerance = 1e-8;
     float xxi_lambda[sub_observations];
     float new_lambda[observations];
-    
+    for(int i=0;i<observations;++i) lambda[i] = 0;
     while(!converged && iter<maxiter){
-      float norm_diff = 0;
       if (slave_id>=0){
-        for(int i=0;i<sub_observations;++i){
-          //float xxi_vec[observations];
-          //random_access_XXI->extract_vec(subject_node_offsets[mpi_rank]+i,observations,xxi_vec);
-          double lam = 0;
-          for(int j=0;j<observations;++j){
-            lam+=XXI[i*observations+j]* lambda[j];
+        bool testgpu2 = (run_cpu && slave_id==0);
+        if(run_gpu){
+#ifdef USE_GPU
+          // run GPU kernel here
+          ocl_wrapper->write_to_buffer("lambda",observations,lambda);
+          ocl_wrapper->run_kernel("compute_xxi_lambda",BLOCK_WIDTH,sub_observations,1,BLOCK_WIDTH,1,1);
+          ocl_wrapper->read_from_buffer("XXI_lambda",sub_observations,xxi_lambda);
+          if(testgpu2){
+            cerr<<"debuggpu xxi_lambda GPU:";
+            float test_xxi_lambda[sub_observations];
+            ocl_wrapper->read_from_buffer("XXI_lambda",sub_observations,test_xxi_lambda);
+            for(int i=0;i<sub_observations;++i){
+              if(i>(sub_observations-10))cerr<<" "<<i<<","<<test_xxi_lambda[i];
+            }
+            cerr<<endl;
           }
-          xxi_lambda[i] = lam;
+#endif
+        } // if run gpu
+        if(run_cpu){
+          if(testgpu2) cerr<<"debuggpu xxi_lambda CPU:";
+          for(int i=0;i<sub_observations;++i){ //float xxi_vec[observations];
+            //random_access_XXI->extract_vec(subject_node_offsets[mpi_rank]+i,observations,xxi_vec);
+            float lam = 0;
+            for(int j=0;j<observations;++j){
+              lam+=XXI[i*observations+j]* lambda[j];
+              //if(j<10 && lambda[j]!=0) cerr<<"i: "<<i<<" lam: "<<lam<<" XXI: "<<XXI[i*observations+j]<<" lambda: "<<lambda[j]<<endl;
+            }
+            xxi_lambda[i] = lam; 
+            if(testgpu2 && i>(sub_observations-10)) cerr<<" "<<i<<","<<xxi_lambda[i];
+          }
+          if(testgpu2) cerr<<endl;
         }
       }
       MPI_Gatherv(xxi_lambda,sub_observations,MPI_FLOAT,xxi_lambda,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
       if(mpi_rank==0){
+        norm_diff = 0;
         for(int i=0;i<observations;++i){
           new_lambda[i] = lambda[i] - inverse_lipschitz *
           (xxi_lambda[i]+theta[i] - xbeta_reduce[i]);
-          if(i<0) cerr<<"XXILAMBDA: "<<xxi_lambda[i]<<" THETA "<<theta[i]<<" XBETA "<<xbeta_reduce[i]<<" NEWLAMBDA: "<<new_lambda[i]<<endl;
+          if(i<-10) cerr<<"XXILAMBDA: "<<xxi_lambda[i]<<" THETA "<<theta[i]<<" XBETA "<<xbeta_reduce[i]<<" NEWLAMBDA: "<<new_lambda[i]<<endl;
           norm_diff+=(new_lambda[i]-lambda[i])*(new_lambda[i]-lambda[i]);
           lambda[i] = new_lambda[i];
         }
         norm_diff=sqrt(norm_diff);
         converged = (norm_diff<tolerance);
         ++iter;
-        cerr<<".";
+        if(config->verbose)cerr<<".";
       }
       //cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
       MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
       MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
       MPI_Bcast(lambda,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
     }
-    cerr<<"Landweber iterations: "<<iter<<endl;
+    if(mpi_rank==0){
+      if(config->verbose)cerr<<"\nLandweber iterations: "<<iter<<" norm diff: "<<norm_diff<<endl;
+      for(int i=0;i<observations;++i) Xbeta_full[i] = xbeta_reduce[i];
+    }
+    //landweber_constant*=.9;
 //}
   }else{
     if(mpi_rank==0){
@@ -205,7 +273,7 @@ void regression_t::update_lambda(){
         float xxii_vec[observations];
         for(int j=0;j<observations;++j){ xxii_vec[j] = 0; }
         random_access_XXI_inv->extract_vec(i,observations,xxii_vec);
-        double lam = 0;
+        float lam = 0;
         for(int j=0;j<observations;++j){
           lam+=xxii_vec[j]* xbeta_theta[j];
           //if (j<10) cerr<<"i,j,xxii_vec:"<<i<<","<<j<<":"<<xxii_vec[j]<<endl;
@@ -237,12 +305,43 @@ void regression_t::project_theta(){
 }
 
 void regression_t::project_beta(){
-  bool debug = true;
+  //bool debug = true;
+  //bool run_cpu = false; 
+  //bool run_gpu = true;
   if(slave_id>=0){
-    if(debug) cerr<<"PROJECT_BETA slave "<<slave_id<<" variable:";
-    for(int j=0;j<variables;++j){
-      if(!in_feasible_region() || constrained_beta[j]!=0){
-        double xt_lambda = 0;
+    bool debug_gpu = (run_cpu && slave_id==0);
+    float xt_lambda_arr[variables];
+    if(run_gpu){
+
+#ifdef USE_GPU
+      ocl_wrapper->write_to_buffer("lambda",observations,lambda);
+      ocl_wrapper->run_kernel("project_beta",BLOCK_WIDTH*subject_chunks,variables,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->run_kernel("reduce_xt_lambda_chunks",BLOCK_WIDTH,variables,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->read_from_buffer("Xt_lambda",variables,xt_lambda_arr);
+      if(debug_gpu){
+        //float Xt_lambda_chunks[variables*subject_chunks];
+        float Xt_temp[variables];
+        //ocl_wrapper->read_from_buffer("Xt_lambda_chunks",variables*subject_chunks,Xt_lambda_chunks);
+        ocl_wrapper->read_from_buffer("Xt_lambda",variables,Xt_temp);
+        cerr<<"debuggpu projectbeta GPU:";
+        for(int j=0;j<variables;++j){
+          //float xt_lambda = 0;
+          for(int i=0;i<subject_chunks;++i){
+            //xt_lambda+=Xt_lambda_chunks[j*subject_chunks+i];
+          }
+          if(j>(variables-10))cerr<<" "<<j<<":"<<Xt_temp[j];
+          //if(j<10)cerr<<" "<<j<<":"<<xt_lambda;
+        }
+        cerr<<endl;
+      }
+#endif
+    }  // if run gpu
+    if(run_cpu){
+      //if(debug) cerr<<"PROJECT_BETA slave "<<slave_id<<" variable:";
+      //bool feasible = in_feasible_region();
+      if(debug_gpu) cerr<<"debuggpu projectbeta CPU:";
+      for(int j=0;j<variables;++j){
+        xt_lambda_arr[j] = 0;
         // emulate what we would do on the GPU
         int SMALL_BLOCK_WIDTH = 32;
         int chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
@@ -268,11 +367,13 @@ void regression_t::project_beta(){
           }
           for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
             int obs_index = chunk*BLOCK_WIDTH+threadindex;
-            if(obs_index<variables){
-              float g=(subset_geno[threadindex]-means[j])*precisions[j];
-              //if(slave_id==0)cerr<<" "<<obs_index<<":"<<g;
-              xt_lambda+= g * lambda[obs_index];
-              //xb+=g * beta[obs_index];
+            if(obs_index<observations){
+              float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[j])*precisions[j];
+              //float g1=(subset_geno[threadindex]);
+              //float g2 = plink_data_X_subset->get_raw_geno(j,obs_index);
+              //if(g1!=g2) cerr<<"project-beta Mismatch at SNP: "<<j<<" obs "<<obs_index<<": "<<g<<","<<g2<<endl;
+              xt_lambda_arr[j]+= g * lambda[obs_index];
+              //if(slave_id==0 && obs_index<100)cerr<<" "<<obs_index<<":"<<g<<":"<<lambda[obs_index];
             }
           }
         }
@@ -281,20 +382,21 @@ void regression_t::project_beta(){
         for(int i=0;i<observations;++i){
           //float g = 0;
           //float g = plink_data_X_subset->get_geno(j,i);
-          //if(slave_id==0)cerr<<" "<<i<<":"<<g;
           //xt_lambda+= g * lambda[i];
-          //xt_lambda+=XT[j*observations+i] * lambda[i];
         }
         //if(slave_id==0)cerr<<endl;
-        beta_project[j] = beta[j]-xt_lambda;
-      }else{
-        beta_project[j] = 0;
-      }
-//        cerr<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
-      if(debug && j % 1000 == 0) cerr<<" "<<j<<","<<beta[j]<<","<<beta_project[j] ;
-    }
-    if(debug) cerr<<endl;
-  }
+      } // loop over variables
+    } // if run cpu
+
+    for(int j=0;j<variables;++j){
+      beta_project[j] = beta[j]-xt_lambda_arr[j];
+      if(debug_gpu && j>(variables-10))cerr<<" "<<j<<":"<<xt_lambda_arr[j];
+//    cerr<<"PROJECT_BETA: var "<<j<<" is "<<beta_project[j]<<endl;
+      //if(debug && j % 1000 == 0) cerr<<" "<<j<<","<<beta[j]<<","<<beta_project[j] ;
+    } // loop over variables
+    //if(debug) cerr<<endl;
+    if(debug_gpu) cerr<<endl;
+  } // if is slave
 }
 
 void regression_t::update_map_distance(){
@@ -362,14 +464,16 @@ void regression_t::update_beta(){
   //double start = clock();
   MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,constrained_beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
   if(slave_id>=0){
-    if(debug) cerr<<"UPDATE_BETA: Node "<<mpi_rank<<" entering";
+    bool feasible = in_feasible_region();
+    if(debug) cerr<<"UPDATE_BETA: Node "<<mpi_rank<<" entering for top "<<config->top_k<<" feasible: "<<feasible<<endl;
     for(int j=0;j<variables;++j){
-      if(!in_feasible_region() || constrained_beta[j]!=0){
+      //if( constrained_beta[j]!=0){
+      //if(!feasible || constrained_beta[j]!=0){
         beta[j] = .5*(beta_project[j]+constrained_beta[j]);
-      }else{
-        beta[j] = 0;
-      }
-      if(debug && j%1000==0) cerr<<" "<<j<<","<<beta[j]<<","<<beta_project[j];
+      //}else{
+        //beta[j] = 0;
+      //}
+      if(debug && j%10==0) cerr<<" "<<j<<","<<constrained_beta[j]<<","<<beta_project[j]<<","<<beta[j];
     }
     if(debug) cerr<<endl;
   }
@@ -427,9 +531,11 @@ void regression_t::update_constrained_beta(){
 
 bool regression_t::in_feasible_region(){
   float mapdist = get_map_distance();
-  float scaled_mapdist = mapdist/(variables+observations);
-  if(config->verbose) cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" scaled: "<<scaled_mapdist<<endl;
-  bool ret= (scaled_mapdist>0 && scaled_mapdist<config->mapdist_epsilon);
+  if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<config->mapdist_epsilon<<endl;
+  bool ret= (mapdist>0 && mapdist<config->mapdist_epsilon);
+  //float scaled_mapdist = mapdist/(variables+observations);
+  //cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" scaled: "<<scaled_mapdist<<" threshold: "<<config->mapdist_epsilon<<endl;
+  //bool ret= (scaled_mapdist>0 && scaled_mapdist<config->mapdist_epsilon);
   return ret;
 }
 
@@ -445,6 +551,8 @@ void regression_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->top_k;
   }else if (token.compare("LANDWEBER_CONSTANT")==0){
     iss>>config->landweber_constant;
+  }else if (token.compare("MAX_LANDWEBER")==0){
+    iss>>config->max_landweber;
   }else if (token.compare("XXI_FILE")==0){
     iss>>config->xxi_file;
   }else if (token.compare("XXI_INV_FILE")==0){
@@ -576,7 +684,7 @@ void regression_t::read_dataset(){
     snp_node_offsets[i+1] = snp_offset;
     subject_node_sizes[i+1] =  observation_indices_vec[i].size();
     subject_node_offsets[i+1] = subject_offset;
-    cerr<<"Offset for rank "<<i+1<<" : SNP: "<<snp_offset<<" subject: "<<subject_offset<<endl;
+    if(config->verbose)cerr<<"Offset for rank "<<i+1<<" : SNP: "<<snp_offset<<" subject: "<<subject_offset<<endl;
     snp_offset+=snp_node_sizes[i+1];
     subject_offset+=subject_node_sizes[i+1];
   }
@@ -604,7 +712,7 @@ void regression_t::read_dataset(){
     plink_data_X_subset->load_data(snpbedfile);
     plink_data_X_subset->set_mean_precision(plink_data_t::ROWS,means,precisions);
     plink_data_X_subset->transpose(plink_data_X_subset_subjectmajor);
-    cerr<<"Transposed!\n";
+    if(config->verbose) cerr<<"Transposed!\n";
     this->packedgeno_snpmajor = plink_data_X_subset->get_packed_geno(this->packedstride_snpmajor);
     this->packedgeno_subjectmajor = plink_data_X_subset_subjectmajor->get_packed_geno(this->packedstride_subjectmajor);
     //load_random_access_data(random_access_geno,X,all_variables,observations,observations,variables, full_subject_mask,variable_mask);
@@ -646,13 +754,13 @@ void regression_t::read_dataset(){
 //      ofs2.close();
     }
   }
-  cerr<<"Read input done\n";
+  if(config->verbose)cerr<<"Read input done\n";
 #endif
 }
 
 void regression_t::parse_fam_file(const char * infile, bool * mask,int len, float * newy){
   int maskcount = 0;
-  cerr<<"Allocating Y of len "<<len<<endl;
+  if(config->verbose)cerr<<"Allocating Y of len "<<len<<endl;
   //newy = new float[len];
   for(int i=0;i<observations;++i){
     maskcount+=mask[i];
@@ -679,8 +787,8 @@ void regression_t::parse_fam_file(const char * infile, bool * mask,int len, floa
     }
     
   }
-  cerr<<"J is "<<j<<endl;
   ifs.close();
+  
   
 }
 void regression_t::parse_bim_file(const char * infile, bool * mask,int len, float * means, float * precisions){
@@ -688,7 +796,7 @@ void regression_t::parse_bim_file(const char * infile, bool * mask,int len, floa
   for(int i=0;i<all_variables;++i){
     maskcount+=mask[i];
   }
-  cerr<<"Node "<<mpi_rank<<" BIM file Mask count is "<<maskcount<<" and len is "<<len<<endl;
+  if(config->verbose)cerr<<"Node "<<mpi_rank<<" BIM file Mask count is "<<maskcount<<" and len is "<<len<<endl;
   assert(maskcount==len);
   ifstream ifs(infile);
   if(!ifs.is_open()){
@@ -903,15 +1011,16 @@ void regression_t::init_xxi_inv(){
   if(cached==2){
     if (slave_id>=0){
       if(config->verbose) cerr<<"Using cached copies of singular values and vectors\n";
-      cerr<<"Using XXI INV file "<<xxi_inv_file.data()<<endl;
+      if(config->verbose)cerr<<"Using XXI INV file "<<xxi_inv_file.data()<<endl;
       random_access_XXI_inv = new random_access_t(xxi_inv_file.data(),observations,observations);
-      cerr<<"Using XXI file "<<xxi_file.data()<<endl;
+      if(config->verbose)cerr<<"Using XXI file "<<xxi_file.data()<<endl;
       random_access_XXI = new random_access_t(xxi_file.data(),observations,observations);
       for(int i=0;i<sub_observations;++i){
+        //cerr<<"Loading row "<<i<<" of size "<<observations<<" into XXI\n";
         random_access_XXI->extract_vec(subject_node_offsets[mpi_rank]+i,observations,XXI+i*observations);
-        if (i%1000==0) cerr<<"Subject "<<i<<" loaded\n";
+        if(config->verbose && i%1000==0) cerr<<"Subject "<<i<<" loaded\n";
       }
-      cerr<<"XXI initialized\n";
+      if(config->verbose)cerr<<"XXI initialized\n";
     }
   }else{
     if(config->verbose) cerr<<"Cannot find cached copy ("<<xxi_file <<") of singular values and vectors. Please pre-compute this. Exiting.\n";
@@ -996,6 +1105,96 @@ void regression_t::init_xxi_inv(){
 #endif
 }
 
+void regression_t::init_gpu(){
+#ifdef USE_GPU
+  // init GPU
+  int subject_chunk_clusters = subject_chunks/BLOCK_WIDTH+(subject_chunks%BLOCK_WIDTH!=0);
+  int snp_chunk_clusters = snp_chunks/BLOCK_WIDTH+(snp_chunks%BLOCK_WIDTH!=0);
+  int platform_id = 0;
+  int device_id = slave_id;
+  vector<string> sources;
+  sources.push_back("cl_constants.h");
+  sources.push_back("packedgeno.c");
+  sources.push_back("common.c");
+  vector<string> paths;
+  for(uint j=0;j<sources.size();++j){
+    ostringstream oss;
+    oss<<config->kernel_base<<"/"<<sources[j];
+    paths.push_back(oss.str());
+  }
+  bool debug_ocl = false;
+  ocl_wrapper = new ocl_wrapper_t(debug_ocl);
+  ocl_wrapper->init(paths,platform_id,device_id);
+  // create kernels
+  ocl_wrapper->create_kernel("update_lambda");
+  ocl_wrapper->create_kernel("reduce_xbeta_chunks");
+  ocl_wrapper->create_kernel("project_beta");
+  ocl_wrapper->create_kernel("reduce_xt_lambda_chunks");
+  ocl_wrapper->create_kernel("compute_xxi_lambda");
+  // create buffers
+  ocl_wrapper->create_buffer<packedgeno_t>("packedgeno_snpmajor",CL_MEM_READ_ONLY,variables*packedstride_snpmajor);
+  ocl_wrapper->create_buffer<packedgeno_t>("packedgeno_subjectmajor",CL_MEM_READ_ONLY,observations*packedstride_subjectmajor);
+  ocl_wrapper->create_buffer<float>("means",CL_MEM_READ_ONLY,variables);
+  ocl_wrapper->create_buffer<float>("precisions",CL_MEM_READ_ONLY,variables);
+  ocl_wrapper->create_buffer<float>("beta",CL_MEM_READ_ONLY,variables);
+  ocl_wrapper->create_buffer<float>("beta_project",CL_MEM_READ_WRITE,variables);
+  ocl_wrapper->create_buffer<float>("Xbeta_full",CL_MEM_READ_WRITE,observations);
+  ocl_wrapper->create_buffer<float>("Xbeta_chunks",CL_MEM_READ_WRITE,observations * snp_chunks);
+  ocl_wrapper->create_buffer<float>("lambda",CL_MEM_READ_ONLY,observations);
+  ocl_wrapper->create_buffer<float>("Xt_lambda_chunks",CL_MEM_READ_WRITE,variables * subject_chunks);
+  ocl_wrapper->create_buffer<float>("Xt_lambda",CL_MEM_READ_WRITE,variables);
+  ocl_wrapper->create_buffer<float>("XXI",CL_MEM_READ_ONLY,sub_observations*observations);
+  ocl_wrapper->create_buffer<float>("XXI_lambda",CL_MEM_READ_WRITE,sub_observations);
+  // initialize buffers
+  ocl_wrapper->write_to_buffer("packedgeno_snpmajor",variables*packedstride_snpmajor,packedgeno_snpmajor);
+  ocl_wrapper->write_to_buffer("packedgeno_subjectmajor",observations*packedstride_subjectmajor,packedgeno_subjectmajor);
+  ocl_wrapper->write_to_buffer("means",variables,means);
+  ocl_wrapper->write_to_buffer("precisions",variables,precisions);
+  ocl_wrapper->write_to_buffer("XXI",sub_observations*observations,XXI);
+  // add Kernel arguments
+  ocl_wrapper->add_kernel_arg("update_lambda",observations);
+  ocl_wrapper->add_kernel_arg("update_lambda",variables);
+  ocl_wrapper->add_kernel_arg("update_lambda",snp_chunks);
+  ocl_wrapper->add_kernel_arg("update_lambda",packedstride_subjectmajor);
+  ocl_wrapper->add_kernel_arg("update_lambda",*(ocl_wrapper->get_buffer("packedgeno_subjectmajor")));
+  ocl_wrapper->add_kernel_arg("update_lambda",*(ocl_wrapper->get_buffer("Xbeta_chunks")));
+  ocl_wrapper->add_kernel_arg("update_lambda",*(ocl_wrapper->get_buffer("beta")));
+  ocl_wrapper->add_kernel_arg("update_lambda",*(ocl_wrapper->get_buffer("means")));
+  ocl_wrapper->add_kernel_arg("update_lambda",*(ocl_wrapper->get_buffer("precisions")));
+  ocl_wrapper->add_kernel_arg("update_lambda",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("update_lambda",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",variables);
+  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",snp_chunks);
+  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",snp_chunk_clusters);
+  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",*(ocl_wrapper->get_buffer("Xbeta_chunks")));
+  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",*(ocl_wrapper->get_buffer("Xbeta_full")));
+  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("project_beta",observations);
+  ocl_wrapper->add_kernel_arg("project_beta",variables);
+  ocl_wrapper->add_kernel_arg("project_beta",subject_chunks);
+  ocl_wrapper->add_kernel_arg("project_beta",packedstride_snpmajor);
+  ocl_wrapper->add_kernel_arg("project_beta",*(ocl_wrapper->get_buffer("packedgeno_snpmajor")));
+  ocl_wrapper->add_kernel_arg("project_beta",*(ocl_wrapper->get_buffer("Xt_lambda_chunks")));
+  ocl_wrapper->add_kernel_arg("project_beta",*(ocl_wrapper->get_buffer("lambda")));
+  ocl_wrapper->add_kernel_arg("project_beta",*(ocl_wrapper->get_buffer("means")));
+  ocl_wrapper->add_kernel_arg("project_beta",*(ocl_wrapper->get_buffer("precisions")));
+  ocl_wrapper->add_kernel_arg("project_beta",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("project_beta",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",observations);
+  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",subject_chunks);
+  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",subject_chunk_clusters);
+  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",*(ocl_wrapper->get_buffer("Xt_lambda_chunks")));
+  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",*(ocl_wrapper->get_buffer("Xt_lambda")));
+  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("compute_xxi_lambda",observations);
+  ocl_wrapper->add_kernel_arg("compute_xxi_lambda",subject_chunks);
+  ocl_wrapper->add_kernel_arg("compute_xxi_lambda",*(ocl_wrapper->get_buffer("XXI")));
+  ocl_wrapper->add_kernel_arg("compute_xxi_lambda",*(ocl_wrapper->get_buffer("lambda")));
+  ocl_wrapper->add_kernel_arg("compute_xxi_lambda",*(ocl_wrapper->get_buffer("XXI_lambda")));
+  ocl_wrapper->add_kernel_arg("compute_xxi_lambda",cl::__local(sizeof(float) * BLOCK_WIDTH));
+#endif
+}
+
 void regression_t::init(string config_file){
 #ifdef USE_MPI
   if(this->single_run){
@@ -1011,7 +1210,7 @@ void regression_t::init(string config_file){
   //config->xx_file_prefix = "xx";
 #endif
   proxmap_t::init(config_file);
-  if (this->slave_id>=0)  config->verbose = false;
+  //if (this->slave_id>=0)  config->verbose = false;
   if(config->verbose) cerr<<"Configuration initialized\n";
 }
 
@@ -1034,6 +1233,8 @@ void regression_t::allocate_memory(){
   this->subject_node_sizes = new int[mpi_numtasks];
   this->subject_node_offsets = new int[mpi_numtasks];
   if(config->verbose) cerr<<"Initialized MPI with "<<slaves<<" slaves.  I am slave "<<slave_id<<endl;
+
+  // Now read the dataset
   read_dataset();
 
   if(slave_id>=0){
@@ -1063,13 +1264,24 @@ void regression_t::allocate_memory(){
   //this->all_constrained_beta = new float[this->all_variables];
   this->constrained_beta = new float[this->variables];
   this->lambda = new float[observations];
-  this->Xbeta = new float[sub_observations];
+  this->Xbeta_full = new float[observations];
   // the LaGrange multiplier
   this->theta = new float[sub_observations];
   this->theta_project = new float[sub_observations];
   //init_marginal_screen();
   this->BLOCK_WIDTH = plink_data_t::BLOCK_WIDTH;
+
+  this->subject_chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
+  this->snp_chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);
   proxmap_t::allocate_memory();
+  if(this->run_gpu && slave_id>=0){
+#ifdef USE_GPU
+    init_gpu();
+#endif
+  }
+
+
+
 #endif
 }
 
@@ -1138,6 +1350,8 @@ void regression_t::initialize(){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
   if (this->mu == 0){
+    this->landweber_constant = config->landweber_constant;
+    this->bestAIC = 0; 
     //this->top_k = variables;
     //this->top_k = config->top_k;
     for(int j=0;j<this->all_variables;++j){
@@ -1149,10 +1363,8 @@ void regression_t::initialize(){
       constrained_beta[j] = 0;
       beta_project[j] = 0;
     }
-    if(mpi_rank==0){
-      for(int i=0;i<this->observations;++i){
-        lambda[i] = 0;
-      }
+    for(int i=0;i<this->observations;++i){
+      lambda[i] = 0;
     }
     for(int i=0;i<this->sub_observations;++i){
       float init_val = 0;
@@ -1239,8 +1451,9 @@ bool regression_t::finalize_iteration(){
       last_beta[j] = beta[j];
     }
     diff_norm = sqrt(diff_norm);
-    float scaled_diff_norm = diff_norm/variables;
-    if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" scaled: "<<scaled_diff_norm<<endl;
+    if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
+    //float scaled_diff_norm = diff_norm/variables;
+    //if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" scaled: "<<scaled_diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
     bool abort = false;
     if(rho<config->rho_min){ 
       cerr<<"FINALIZE_ITERATION: Rho shrunk to minimum. Aborting\n";
@@ -1255,7 +1468,7 @@ bool regression_t::finalize_iteration(){
 //      }
 //    }
     //proceed = total_iterations<30000;
-    proceed = (!in_feasible_region() || scaled_diff_norm>config->beta_epsilon) && (!abort);
+    proceed = (!in_feasible_region() || diff_norm>config->beta_epsilon) && (!abort);
     //proceed = get_map_distance() > 1e-6  || active_set_size>this->top_k;
   }
   MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
@@ -1264,11 +1477,20 @@ bool regression_t::finalize_iteration(){
     ostringstream oss;
     oss<<"param.final."<<mpi_rank;
     string filename=oss.str();
-    cerr<<"FINALIZE_ITERATION: Dumping parameter contents in "<<filename<<"\n";
+    if(config->verbose)cerr<<"FINALIZE_ITERATION: Dumping parameter contents in "<<filename<<"\n";
     ofstream ofs(filename.data());
-    ofs<<"j\tBeta\tBeta project\n";
-    for(int j=0;j<p;++j){
-      ofs<<j<<"\t"<<beta[j]<<"\t"<<beta_project[j]<<"\n";
+    if(mpi_rank==0){
+      cout<<"BEST AIC: "<<bestAIC<<endl;
+      ofs<<"INDEX\tBETA\n";
+      for(int j=0;j<p;++j){
+        ofs<<j<<"\t"<<beta[j]<<"\n";
+      }
+    }else{
+      int offset = snp_node_offsets[mpi_rank];
+      ofs<<"INDEX\tBETA_PROJECT\n";
+      for(int j=0;j<p;++j){
+        ofs<<offset+j<<"\t"<<beta_project[j]<<"\n";
+      }
     }
     ofs.close();
   }
@@ -1280,17 +1502,17 @@ bool regression_t::finalize_iteration(){
 
 void regression_t::iterate(){
   //cerr<<"ITERATE: "<<mpi_rank<<endl;
-  if(mpi_rank==0) cerr<<"updatelambda\n";
+  //if(mpi_rank==0) cerr<<"updatelambda\n";
   update_lambda();
-  if(mpi_rank==0) cerr<<"project theta\n";
+  //if(mpi_rank==0) cerr<<"project theta\n";
   project_theta();
-  if(mpi_rank==0) cerr<<"project beta\n";
+  //if(mpi_rank==0) cerr<<"project beta\n";
   project_beta();
-  if(mpi_rank==0) cerr<<"update map 1\n";
+  //if(mpi_rank==0) cerr<<"update map 1\n";
   update_map_distance();
-  if(mpi_rank==0) cerr<<"update theta\n";
+  //if(mpi_rank==0) cerr<<"update theta\n";
   update_theta();
-  if(mpi_rank==0) cerr<<"update beta\n";
+  //if(mpi_rank==0) cerr<<"update beta\n";
   update_beta();
   //update_map_distance();
   ++total_iterations;
@@ -1338,12 +1560,14 @@ float regression_t::evaluate_obj(){
 #ifdef USE_MPI
   //int bypass = 0;
 //  cerr<<"EVALUATE_OBJ "<<mpi_rank<<" sub_obs: "<<sub_observations<<"\n";
-  MPI_Gatherv(Xbeta,sub_observations,MPI_FLOAT,Xbeta,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+  //MPI_Gatherv(Xbeta,sub_observations,MPI_FLOAT,Xbeta,subject_node_sizes,subject_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
   if (mpi_rank==0){
     last_residual = residual;
     residual = 0;
     for(int i=0;i<observations;++i){
-      residual+=(y[i]-theta[i])*(y[i]-theta[i]);
+      //residual+=(y[i]-theta[i])*(y[i]-theta[i]);
+      if(i<-10) cerr<<"RESIDUAL: "<<Xbeta_full[i]<<","<<theta[i]<<endl;
+      residual+=(Xbeta_full[i]-theta[i])*(Xbeta_full[i]-theta[i]);
     }
     //float penalty = 0;
     //for(int j=0;j<variables;++j){
@@ -1351,11 +1575,10 @@ float regression_t::evaluate_obj(){
     //}
     float proxdist = get_prox_dist_penalty(); 
     obj = .5*residual+proxdist;
-    if(config->verbose){
-      cerr<<"EVALUATE_OBJ: norm1 "<<residual<<" PROXDIST: "<<proxdist<<" FULL: "<<obj<<endl;
-    }
+    float AIC = 2 * config->top_k + observations * log(residual/observations);
+    if (AIC<bestAIC) bestAIC = AIC;
+    cerr<<"EVALUATE_OBJ: norm1 "<<residual<<" PROXDIST: "<<proxdist<<" FULL: "<<obj<<" AIC: "<<AIC<<endl;
   }
-  ofs_debug<<"EVALUATE_OBJ: Last obj "<<last_obj<<" current:  "<<obj<<"!\n";
   //MPI_Bcast(&bypass,1,MPI_INT,0,MPI_COMM_WORLD);
   //bypass_downhill_check = bypass;
   MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
