@@ -12,7 +12,6 @@
 #include<gsl/gsl_linalg.h>
 #include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
-#include"cl_headers.h"
 #include"regression.hpp"
 
 const int SMALL_BLOCK_WIDTH = 32;
