@@ -41,10 +41,15 @@ private:
   // flags
   bool single_run; // flag to know if this is embedded in cross validation
   int total_iterations;
+  int current_top_k;
   bool track_residual;
   float last_residual;
+  float current_BIC;
+  float last_BIC;
+  float last_mapdist;
   float residual;
   float landweber_constant;
+  float current_mapdist_threshold;
   int BLOCK_WIDTH;
 
   // dimensions
@@ -53,7 +58,6 @@ private:
   int variables; // is all snps for master, and subset for slaves
   int all_variables; // is all snps for all nodes
   
-  float bestAIC;
 
   float * all_y; // outcome same dimension on all nodes
   float * y; // dimension dependent variable for outcome
@@ -73,6 +77,10 @@ private:
   float * theta_project; // these have length dependent on sub observations
 
   float * XXI; // the cached data of (X^T %*% X + I)^-1
+
+  // model selection containers
+  float * grid_bic;
+  float * grid_beta;
 
   // IO variables
   plink_data_t * plink_data_X_subset;

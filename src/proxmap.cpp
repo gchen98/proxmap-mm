@@ -82,6 +82,8 @@ void proxmap_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->obj_epsilon;
   }else if (token.compare("MAPDIST_EPSILON")==0){
     iss>>config->mapdist_epsilon;
+  }else if (token.compare("MAPDIST_THRESHOLD")==0){
+    iss>>config->mapdist_threshold;
   }else if (token.compare("MU_MIN")==0){
     iss>>config->mu_min;
   }else if (token.compare("MU_INCREMENT")==0){

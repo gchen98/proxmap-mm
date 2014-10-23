@@ -92,7 +92,7 @@ void regression_t::update_lambda(){
   bool debug = false;
   //float Xbeta_full[observations];
   if(slave_id>=0){
-    bool debug_gpu = (run_cpu && slave_id==0);
+    bool debug_gpu = (run_cpu && slave_id==-10);
     if(run_gpu){
 #ifdef USE_GPU
       ocl_wrapper->write_to_buffer("beta",variables,beta);
@@ -199,7 +199,7 @@ void regression_t::update_lambda(){
     for(int i=0;i<observations;++i) lambda[i] = 0;
     while(!converged && iter<maxiter){
       if (slave_id>=0){
-        bool testgpu2 = (run_cpu && slave_id==0);
+        bool testgpu2 = (run_cpu && slave_id==-10);
         if(run_gpu){
 #ifdef USE_GPU
           // run GPU kernel here
@@ -309,7 +309,7 @@ void regression_t::project_beta(){
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
-    bool debug_gpu = (run_cpu && slave_id==0);
+    bool debug_gpu = (run_cpu && slave_id==-10);
     float xt_lambda_arr[variables];
     if(run_gpu){
 
@@ -401,6 +401,7 @@ void regression_t::project_beta(){
 
 void regression_t::update_map_distance(){
 #ifdef USE_MPI
+  this->last_mapdist = this->map_distance;
   float theta_distance = 0;
   if(mpi_rank==0){
     for(int i=0;i<observations;++i){
@@ -430,6 +431,7 @@ void regression_t::update_map_distance(){
     //cerr<<"UPDATE_MAP_DISTANCE: Deviances: theta: "<<theta_distance<<" beta:"<<beta_distance_reduce<<" constraint:"<<constraint_dev<<" map dist: "<<this->map_distance<<endl;
   }
   MPI_Bcast(&this->map_distance,1,MPI_FLOAT,0,MPI_COMM_WORLD);
+  
 #endif
 }
 
@@ -465,7 +467,7 @@ void regression_t::update_beta(){
   MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,constrained_beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
   if(slave_id>=0){
     bool feasible = in_feasible_region();
-    if(debug) cerr<<"UPDATE_BETA: Node "<<mpi_rank<<" entering for top "<<config->top_k<<" feasible: "<<feasible<<endl;
+    if(debug) cerr<<"UPDATE_BETA: Node "<<mpi_rank<<" entering for top "<<this->current_top_k<<" feasible: "<<feasible<<endl;
     for(int j=0;j<variables;++j){
       //if( constrained_beta[j]!=0){
       //if(!feasible || constrained_beta[j]!=0){
@@ -496,7 +498,7 @@ void regression_t::update_constrained_beta(){
     int j=0;
     for(multiset<beta_t,byValDesc>::iterator it=sorted_beta.begin();it!=sorted_beta.end();it++){
       beta_t b = *it;
-      if (j<config->top_k){
+      if (j<this->current_top_k){
         constrained_beta[b.index] = b.val;
         //active_indices[active_counter] = b.index;
         //active_vals[active_counter] = b.val;
@@ -531,11 +533,8 @@ void regression_t::update_constrained_beta(){
 
 bool regression_t::in_feasible_region(){
   float mapdist = get_map_distance();
-  if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<config->mapdist_epsilon<<endl;
-  bool ret= (mapdist>0 && mapdist<config->mapdist_epsilon);
-  //float scaled_mapdist = mapdist/(variables+observations);
-  //cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" scaled: "<<scaled_mapdist<<" threshold: "<<config->mapdist_epsilon<<endl;
-  //bool ret= (scaled_mapdist>0 && scaled_mapdist<config->mapdist_epsilon);
+  if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<this->current_mapdist_threshold<<endl;
+  bool ret= (mapdist>0 && mapdist< this->current_mapdist_threshold);
   return ret;
 }
 
@@ -547,8 +546,10 @@ void regression_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->snp_bed_file;
   }else if (token.compare("BIM_FILE")==0){
     iss>>config->bim_file;
-  }else if (token.compare("TOP_K")==0){
-    iss>>config->top_k;
+  }else if (token.compare("TOP_K_MIN")==0){
+    iss>>config->top_k_min;
+  }else if (token.compare("TOP_K_MAX")==0){
+    iss>>config->top_k_max;
   }else if (token.compare("LANDWEBER_CONSTANT")==0){
     iss>>config->landweber_constant;
   }else if (token.compare("MAX_LANDWEBER")==0){
@@ -1273,15 +1274,34 @@ void regression_t::allocate_memory(){
 
   this->subject_chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
   this->snp_chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);
+  // initializations
+  this->landweber_constant = config->landweber_constant;
+  this->last_mapdist = 1e10;
+  this->current_mapdist_threshold = config->mapdist_threshold;
+  for(int j=0;j<this->all_variables;++j){
+    all_beta[j] = 0;
+  }
+  for(int j=0;j<this->variables;++j){
+    last_beta[j] = beta[j] = 0;
+    constrained_beta[j] = 0;
+    beta_project[j] = 0;
+  }
+  for(int i=0;i<this->observations;++i){
+    lambda[i] = 0;
+  }
+  for(int i=0;i<this->sub_observations;++i){
+    float init_val = 0;
+    theta[i] = theta_project[i] = init_val;
+  }
+  this->map_distance = 0;
+  this->current_top_k = config->top_k_max;
+  this->last_BIC = 1e10;
   proxmap_t::allocate_memory();
   if(this->run_gpu && slave_id>=0){
 #ifdef USE_GPU
     init_gpu();
 #endif
   }
-
-
-
 #endif
 }
 
@@ -1318,13 +1338,21 @@ float regression_t::infer_rho(){
         //if(new_rho<=config->rho_min) new_rho = config->rho_min;
         
       }else{
-        if(last_rho>=config->rho_max) {
-          config->rho_max*=config->rho_scale_fast;
+        bool mapdist_stalled = fabs(last_mapdist - map_distance)/last_mapdist<config->mapdist_epsilon;
+        //if(last_rho>=config->rho_max) {
+        if(mapdist_stalled) {
+          new_rho = last_rho * config->rho_scale_fast;
+          //new_rho = last_rho<config->rho_max?last_rho + config->rho_scale_slow:last_rho;
+          cerr<<"INFER_RHO: Map dist stalled, accelerating rho increment\n";
+        }else{
+          new_rho = last_rho + config->rho_scale_slow;
+          //new_rho = last_rho<config->rho_max?last_rho + config->rho_scale_slow:last_rho;
         }
-        new_rho = last_rho<config->rho_max?last_rho + config->rho_scale_slow:last_rho;
-        if (in_feasible_region()) { // the projections are feasible
+        if (in_feasible_region() ) { // the projections are feasible
           track_residual = true;
           cerr<<"INFER_RHO: enabling residual tracking\n";
+          //if(mapdist_stalled) this->current_mapdist_threshold = this->map_distance;
+          //cerr<<"INFER_RHO: Map distance threshold revised to "<<this->current_mapdist_threshold<<"\n";
         }
       }
       if(isinf(new_rho) || isnan(new_rho)){
@@ -1350,38 +1378,6 @@ void regression_t::initialize(){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
   if (this->mu == 0){
-    this->landweber_constant = config->landweber_constant;
-    this->bestAIC = 0; 
-    //this->top_k = variables;
-    //this->top_k = config->top_k;
-    for(int j=0;j<this->all_variables;++j){
-      all_beta[j] = 0;
-      //all_constrained_beta[j] = 0;
-    }
-    for(int j=0;j<this->variables;++j){
-      last_beta[j] = beta[j] = 0;
-      constrained_beta[j] = 0;
-      beta_project[j] = 0;
-    }
-    for(int i=0;i<this->observations;++i){
-      lambda[i] = 0;
-    }
-    for(int i=0;i<this->sub_observations;++i){
-      float init_val = 0;
-      //cerr<<"INIT VAL: "<<init_val<<endl;
-      //float init_val = y[i];
-      theta[i] = theta_project[i] = init_val;
-    }
-    this->map_distance = 0;
-    //cerr<<"INITIALIZE: getting objective"<<endl;
-    //evaluate_obj();
-  }else{
-    if (in_feasible_region()){
-      //this->top_k = config->top_k;
-    }else{
-      //this->top_k-=10;
-      //if (this->top_k < config->top_k) top_k = config->top_k;
-    }
   }
   
 }
@@ -1390,20 +1386,20 @@ bool regression_t::finalize_inner_iteration(){
   //int proceed = false;
 #ifdef USE_MPI
   if(mpi_rank==0){
-    float active_norm = 0;
-    float inactive_norm = 0;
-    //active_set_size = 0;
-    for(int j=0;j<variables;++j){
-      //active_set[j]=fabs(beta[j])>config->beta_epsilon;
-      //active_set_size+=active_set[j];
-      if(constrained_beta[j]==0){
-        inactive_norm+=fabs(beta[j]);
-      }else{
-        active_norm+=fabs(beta[j]);
-      }
-    }
-    if (config->verbose) cerr<<"active norm: "<<active_norm<<" inactive norm: "<<inactive_norm<<endl;
-    //proceed = (mu==0 || active_set_size>config->top_k);
+//    float active_norm = 0;
+//    float inactive_norm = 0;
+//    //active_set_size = 0;
+//    for(int j=0;j<variables;++j){
+//      //active_set[j]=fabs(beta[j])>config->beta_epsilon;
+//      //active_set_size+=active_set[j];
+//      if(constrained_beta[j]==0){
+//        inactive_norm+=fabs(beta[j]);
+//      }else{
+//        active_norm+=fabs(beta[j]);
+//      }
+//    }
+//    if (config->verbose) cerr<<"active norm: "<<active_norm<<" inactive norm: "<<inactive_norm<<endl;
+//    //proceed = (mu==0 || active_set_size>this->current_top_k);
   }
   //print_output();
   //MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
@@ -1414,34 +1410,8 @@ bool regression_t::finalize_inner_iteration(){
 
 bool regression_t::finalize_iteration(){
   int proceed = false; 
-  //int active_count = 0;
-  if(mpi_rank==0){
-    for(int j=0;j<variables;++j){
-      //if(fabs(beta[j])<config->beta_epsilon) beta[j] = 0;
-      //beta[j] = constrained_beta[j];
-      //active_count+=beta[j]!=0;
-    }
-    //if(config->verbose) cerr<<"FINALIZE_ITERATION: active_count reset to: "<<active_count<<endl;
-  }
-  //MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
 #ifdef USE_MPI
   if(mpi_rank==0){
-    //float active_norm = 0;
-    //float inactive_norm = 0;
-    //active_set_size = 0;
-    //for(int j=0;j<variables;++j){
-     
-    //  active_set[j]=fabs(beta[j])>config->beta_epsilon;
-    //  ofs_debug<<"FINALIZE_ITERATION: "<<active_set[j]<<","<<beta[j]<<","<<config->beta_epsilon<<endl;
-    //  active_set_size+=active_set[j];
-    //  if(constrained_beta[j]==0){
-    //    inactive_norm+=fabs(beta[j]);
-    //  }else{
-    //    active_norm+=fabs(beta[j]);
-    //  }
-   // }
-   // if (config->verbose)cerr<<"inactive norm: "<<inactive_norm<<" active norm: "<<active_norm<<endl;
-   // ofs_debug<<"FINALIZE_ITERATION: active set size at mu "<<mu<<": "<<active_set_size<<endl;
     float diff_norm = 0;
     for(int j=0;j<variables;++j){
       if(constrained_beta[j]!=0){
@@ -1451,50 +1421,40 @@ bool regression_t::finalize_iteration(){
       last_beta[j] = beta[j];
     }
     diff_norm = sqrt(diff_norm);
-    if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
-    //float scaled_diff_norm = diff_norm/variables;
-    //if (config->verbose) cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" scaled: "<<scaled_diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
-    bool abort = false;
+    bool top_k_finalized = false;
     if(rho<config->rho_min){ 
       cerr<<"FINALIZE_ITERATION: Rho shrunk to minimum. Aborting\n";
-      abort = true;
+      top_k_finalized = true;
     }
-//    if (diff_norm<1e-6 && !in_feasible_region()){
-//      config->rho_max*=config->rho_scale_fast;
-//      if (config->verbose) cerr<<"FINALIZE_ITERATION: Increasing rho_max to "<<config->rho_max<<" as we converged to an infeasible region\n";
-//      if (isinf(config->rho_max)|| isnan(config->rho_max)){
-//        cerr<<"FINALIZE_ITERATION: Rho max would be infinity. Aborting\n";
-//        abort = true;
-//      }
-//    }
-    //proceed = total_iterations<30000;
-    proceed = (!in_feasible_region() || diff_norm>config->beta_epsilon) && (!abort);
-    //proceed = get_map_distance() > 1e-6  || active_set_size>this->top_k;
-  }
-  MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
-  if(!proceed){
-    int p = variables;
-    ostringstream oss;
-    oss<<"param.final."<<mpi_rank;
-    string filename=oss.str();
-    if(config->verbose)cerr<<"FINALIZE_ITERATION: Dumping parameter contents in "<<filename<<"\n";
-    ofstream ofs(filename.data());
-    if(mpi_rank==0){
-      cout<<"BEST AIC: "<<bestAIC<<endl;
+    if(current_BIC > last_BIC){
+      cerr<<"FINALIZE_ITERATION: BIC grew from "<<last_BIC<<" to "<<current_BIC<<". Aborting search\n";
+      top_k_finalized = true;
+    }
+    if(in_feasible_region() && diff_norm<config->beta_epsilon){
+      cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
+      top_k_finalized = true;
+    }
+    if (top_k_finalized){
+      int p = variables;
+      ostringstream oss;
+      oss<<"betas.k."<<current_top_k<<".txt";
+      string filename=oss.str();
+      cerr<<"FINALIZE_ITERATION: Dumping parameter contents into "<<filename<<"\n";
+      ofstream ofs(filename.data());
+      ofs<<"BIC\t"<<current_BIC<<endl;
       ofs<<"INDEX\tBETA\n";
       for(int j=0;j<p;++j){
-        ofs<<j<<"\t"<<beta[j]<<"\n";
+        if(constrained_beta[j]!=0){
+          ofs<<j<<"\t"<<beta[j]<<"\n";
+        }
       }
-    }else{
-      int offset = snp_node_offsets[mpi_rank];
-      ofs<<"INDEX\tBETA_PROJECT\n";
-      for(int j=0;j<p;++j){
-        ofs<<offset+j<<"\t"<<beta_project[j]<<"\n";
-      }
+      ofs.close();
+      last_BIC = current_BIC;
+      --this->current_top_k;
     }
-    ofs.close();
+    proceed = !top_k_finalized || this->current_top_k >= config->top_k_min;
   }
-//cout<<"active size size "<<active_set_size<<" mu: "<<mu<<" proceed: "<<proceed<<endl;
+  MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
 #endif
   return proceed;
 }
@@ -1520,9 +1480,9 @@ void regression_t::iterate(){
 
 void regression_t::print_output(){
   if(mpi_rank==0 ){
-  //if(mpi_rank==0 && active_set_size<=config->top_k){
+  //if(mpi_rank==0 && active_set_size<=this->current_top_k){
     cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" mapdist: "<<this->map_distance<<endl;
-    cerr<<"INDEX\tBETA(of "<<config->top_k<<")\n";
+    cerr<<"INDEX\tBETA(of "<<this->current_top_k<<")\n";
     //for(int j=0;j<10;++j){
     for(int j=0;j<variables;++j){
       if (constrained_beta[j]!=0){
@@ -1575,9 +1535,8 @@ float regression_t::evaluate_obj(){
     //}
     float proxdist = get_prox_dist_penalty(); 
     obj = .5*residual+proxdist;
-    float AIC = 2 * config->top_k + observations * log(residual/observations);
-    if (AIC<bestAIC) bestAIC = AIC;
-    cerr<<"EVALUATE_OBJ: norm1 "<<residual<<" PROXDIST: "<<proxdist<<" FULL: "<<obj<<" AIC: "<<AIC<<endl;
+    current_BIC = log(observations) * this->current_top_k + observations * log(residual/observations);
+    cerr<<"EVALUATE_OBJ: norm1 "<<residual<<" PROXDIST: "<<proxdist<<" FULL: "<<obj<<" BIC: "<<current_BIC<<endl;
   }
   //MPI_Bcast(&bypass,1,MPI_INT,0,MPI_COMM_WORLD);
   //bypass_downhill_check = bypass;

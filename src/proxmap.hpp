@@ -28,6 +28,7 @@ struct config_t{
   float rho_distance_ratio;
   float obj_epsilon;
   float mapdist_epsilon;
+  float mapdist_threshold;
   int max_iter;
 
   float mu_min;  // penalty parameter
@@ -67,7 +68,8 @@ struct config_t{
   string bim_file;
   string fam_file;
   //float nu;  // penalty parameter
-  int top_k;
+  int top_k_min;
+  int top_k_max;
   bool debug_mpi;
   bool single_run;
 };
