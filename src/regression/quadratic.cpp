@@ -76,6 +76,7 @@ quadratic_t::~quadratic_t(){
 void quadratic_t::update_Xbeta(){
 #ifdef USE_MPI
   bool debug = false;
+  bool debug_gpu = (run_cpu && slave_id==0);
   if(slave_id>=0){
     if(run_gpu){
   #ifdef USE_GPU
@@ -86,7 +87,7 @@ void quadratic_t::update_Xbeta(){
       if(debug_gpu){
         float Xbeta_temp[observations];
         ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_temp);
-        cerr<<"debug gpu update_lambda GPU:";
+        cerr<<"debug gpu update_Xbeta GPU:";
         for(int i=0;i<observations;++i){
           if(i>(observations-10))cerr<<" "<<i<<":"<<Xbeta_temp[i];
         }
@@ -97,7 +98,8 @@ void quadratic_t::update_Xbeta(){
     if(run_cpu){
       if(debug) cerr<<"UPDATE_BETA slave: "<<slave_id<<", observation:";
       //for(int i=0;i<100;++i){
-        for(int i=0;i<observations;++i){
+      if(debug_gpu) cerr<<"debug gpu update_Xbeta CPU:";
+      for(int i=0;i<observations;++i){
         float xb = 0;
         //cerr<<i<<":";
         // emulate what we would do on the GPU
@@ -132,7 +134,9 @@ void quadratic_t::update_Xbeta(){
           }
         }
         Xbeta_full[i] = xb;
+        if(debug_gpu && i>(observations-10))cerr<<" "<<i<<":"<<Xbeta_full[i];
       }
+      if (debug_gpu) cerr<<endl;
       if(debug) cerr<<endl;
     } // if run_cpu
   }else{
@@ -141,7 +145,10 @@ void quadratic_t::update_Xbeta(){
   float xbeta_reduce[observations];
   MPI_Reduce(Xbeta_full,xbeta_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
   if(mpi_rank==0){
-    for(int i=0;i<observations;++i) Xbeta_full[i] = xbeta_reduce[i];
+    for(int i=0;i<observations;++i) {
+      Xbeta_full[i] = xbeta_reduce[i];
+      //cerr<<"Xbeta full "<<i<<" is "<<Xbeta_full[i];
+    }
   }
   MPI_Bcast(Xbeta_full,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 #endif
@@ -165,14 +172,14 @@ void quadratic_t::update_beta_landweber(){
     compute_xt_times_vector(Xbeta_full,XtXbeta);
     if (slave_id>=0){
       //bool testgpu2 = (run_cpu && slave_id==-10);
-      if(run_gpu){
-      } // if run gpu
-      if(run_cpu){
-        for(int j=0;j<variables;++j){ 
-          new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] + dist_func*(beta[j]-constrained_beta[j]) - XtY[j]);
-          if(j<5) cerr<<"J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<new_beta[j]<<endl;
-        }
+      //if(run_gpu){
+      //} // if run gpu
+      //if(run_cpu){
+      for(int j=0;j<variables;++j){ 
+        new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] + dist_func*(beta[j]-constrained_beta[j]) - XtY[j]);
+        if(j<-5) cerr<<"J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<new_beta[j]<<endl;
       }
+      //}
     }
     MPI_Gatherv(new_beta,variables,MPI_FLOAT,new_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
     if(mpi_rank==0){
@@ -337,20 +344,19 @@ void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
-    bool debug_gpu = (run_cpu && slave_id==-10);
+    bool debug_gpu = (run_cpu && slave_id==0);
     if(run_gpu ){
-
 #ifdef USE_GPU
       ocl_wrapper->write_to_buffer("invec",observations,in_vec);
       ocl_wrapper->run_kernel("compute_xt_times_vector",BLOCK_WIDTH*subject_chunks,variables,1,BLOCK_WIDTH,1,1);
       ocl_wrapper->run_kernel("reduce_xt_vec_chunks",BLOCK_WIDTH,variables,1,BLOCK_WIDTH,1,1);
-      ocl_wrapper->read_from_buffer("Xt_vec",variables,out_vec;
+      ocl_wrapper->read_from_buffer("Xt_vec",variables,out_vec);
       if(debug_gpu){
         //float Xt_y_chunks[variables*subject_chunks];
         float Xt_temp[variables];
         //ocl_wrapper->read_from_buffer("Xt_y_chunks",variables*subject_chunks,Xt_y_chunks);
         ocl_wrapper->read_from_buffer("Xt_vec",variables,Xt_temp);
-        cerr<<"debuggpu projectbeta GPU:";
+        cerr<<"debuggpu compute_xt_times_vector GPU:";
         for(int j=0;j<variables;++j){
           //float xt_y = 0;
           for(int i=0;i<subject_chunks;++i){
@@ -366,7 +372,7 @@ void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
     if(run_cpu){
       //if(debug) cerr<<"PROJECT_BETA slave "<<slave_id<<" variable:";
       //bool feasible = in_feasible_region();
-      if(debug_gpu) cerr<<"debuggpu init_xt_times_vec CPU:";
+      if(debug_gpu) cerr<<"debuggpu compute_xt_times_vector CPU:";
       for(int j=0;j<variables;++j){
         out_vec[j] = 0;
         // emulate what we would do on the GPU
@@ -411,10 +417,11 @@ void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
           //float g = plink_data_X_subset->get_geno(j,i);
           //xt_y+= g * y[i];
         //}
+        if(debug_gpu && j>(variables-10))cerr<<" "<<j<<":"<<out_vec[j];
         //if(slave_id==0)cerr<<endl;
       } // loop over variables
+      if(debug_gpu) cerr<<endl;
     } // if run cpu
-    if(debug_gpu) cerr<<endl;
   } // if is slave
 }
 
@@ -759,12 +766,12 @@ void quadratic_t::init_gpu(){
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("precisions")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",cl::__local(sizeof(float) * BLOCK_WIDTH));
-  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",observations);
-  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",subject_chunks);
-  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",subject_chunk_clusters);
-  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",*(ocl_wrapper->get_buffer("Xt_vec_chunks")));
-  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",*(ocl_wrapper->get_buffer("Xt_vec")));
-  ocl_wrapper->add_kernel_arg("reduce_xt_lambda_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",observations);
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",subject_chunks);
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",subject_chunk_clusters);
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",*(ocl_wrapper->get_buffer("Xt_vec_chunks")));
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",*(ocl_wrapper->get_buffer("Xt_vec")));
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
 #endif
 }
 
@@ -832,13 +839,14 @@ void quadratic_t::allocate_memory(){
   this->map_distance = 0;
   this->current_top_k = config->top_k_max;
   this->last_BIC = 1e10;
-  compute_xt_times_vector(y,XtY);
   proxmap_t::allocate_memory();
   if(this->run_gpu && slave_id>=0){
 #ifdef USE_GPU
     init_gpu();
 #endif
   }
+  compute_xt_times_vector(y,XtY);
+  //MPI_Finalize();exit(1);
 #endif
 }
 

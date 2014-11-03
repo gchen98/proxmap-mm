@@ -138,7 +138,7 @@ __local float * local_xt
     barrier(CLK_LOCAL_MEM_FENCE);
   }
   if(threadindex==0){
-    Xt_y[snp] = local_xt[0];
+    Xt_vec[snp] = local_xt[0];
   }
 }
 

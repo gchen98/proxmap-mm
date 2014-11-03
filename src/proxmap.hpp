@@ -12,6 +12,7 @@ using namespace std;
 #ifdef USE_GPU
 #include<CL/cl.h>
 #include<CL/cl.hpp>
+#include<ocl_wrapper.hpp>
 #endif
 
 

@@ -3,9 +3,9 @@
 #ifdef USE_MPI
 #include<mpi.h>
 #endif
-#ifdef USE_GPU
-#include<ocl_wrapper.hpp>
-#endif
+//#ifdef USE_GPU
+//#include<ocl_wrapper.hpp>
+//#endif
 
 using namespace std;
 
