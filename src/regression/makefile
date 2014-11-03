@@ -1,14 +1,17 @@
 include ../common.mk
 
-OBJS=regression.o 
+OBJS=param_split.o quadratic.o
 
 
 compile: $(OBJS)
 
-regression.o: regression.cpp regression.hpp
-	$(CC) $(CFLAGS) $(PREPROC) -o regression.o -c $<
+quadratic.o: quadratic.cpp quadratic.hpp
+	$(CC) $(CFLAGS) $(PREPROC) -o quadratic.o -c $<
 
-regression_with_theta.o: regression_with_theta.cpp regression_with_theta.hpp
-	$(CC) $(CFLAGS) $(PREPROC) -o regression_with_theta.o -c $<
+param_split.o: param_split.cpp param_split.hpp
+	$(CC) $(CFLAGS) $(PREPROC) -o param_split.o -c $<
+
+param_split_with_theta.o: param_split_with_theta.cpp param_split_with_theta.hpp
+	$(CC) $(CFLAGS) $(PREPROC) -o param_split_with_theta.o -c $<
 clean :
 	rm -f *.o

@@ -3,8 +3,6 @@
 #ifdef USE_MPI
 #include<mpi.h>
 #endif
-#include<random_access.hpp>
-#include<plink_data.hpp>
 #ifdef USE_GPU
 #include<ocl_wrapper.hpp>
 #endif
@@ -13,10 +11,10 @@ using namespace std;
 
 class cross_validation_t;
 
-class regression_t:public proxmap_t{
+class param_split_t:public proxmap_t{
 public:
-  regression_t(bool single_run);
-  ~regression_t();
+  param_split_t(bool single_run);
+  ~param_split_t();
   void init(string configfile);
   void allocate_memory();
   friend class cross_validation_t;
@@ -138,7 +136,7 @@ private:
   //void load_random_access_data(random_access_t *   random_access, float * & mat, int in_variables, int in_observations,int out_observations, int out_variables, bool * observation_mask, bool * variables_mask);
 };
 
-inline float regression_t::c2g(char c,int shifts){
+inline float param_split_t::c2g(char c,int shifts){
   int val = (static_cast<int>(c))>>(2*shifts) & 3;
   assert(val<4);
   return plink_data_t::plink_geno_mapping[val];

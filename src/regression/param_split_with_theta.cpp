@@ -11,7 +11,7 @@
 #include<gsl/gsl_linalg.h>
 #include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
-#include"regression_with_theta.hpp"
+#include"param_split_with_theta.hpp"
 
 struct beta_t{
   int index;
@@ -31,12 +31,12 @@ struct byValDesc{
   }
 };
 
-regression_with_theta_t::regression_with_theta_t(bool single_run){
+param_split_with_theta_t::param_split_with_theta_t(bool single_run){
   this->single_run = single_run;
   this->total_iterations = 0;
 }
 
-regression_with_theta_t::~regression_with_theta_t(){
+param_split_with_theta_t::~param_split_with_theta_t(){
 #ifdef USE_MPI
   if(slave_id>=0){
     delete [] X;
@@ -64,7 +64,7 @@ regression_with_theta_t::~regression_with_theta_t(){
 }
 
 
-void regression_with_theta_t::update_Xbeta(float * beta){
+void param_split_with_theta_t::update_Xbeta(float * beta){
   // PN operations
   bool active[variables];
   for(int j=0;j<variables;++j){
@@ -82,7 +82,7 @@ void regression_with_theta_t::update_Xbeta(float * beta){
 
 
 
-void regression_with_theta_t::update_lambda(){
+void param_split_with_theta_t::update_lambda(){
 #ifdef USE_MPI
   //double start = clock();
   float theta_norm = 0;
@@ -135,7 +135,7 @@ void regression_with_theta_t::update_lambda(){
 }
 
 
-void regression_with_theta_t::project_beta(){
+void param_split_with_theta_t::project_beta(){
   //double start = clock();
   bool debug = true;
   if(slave_id>=0){
@@ -177,7 +177,7 @@ void regression_with_theta_t::project_beta(){
   //if(config->verbose) cerr<<"BENCHMARK PROJECT_BETA: "<<(clock()-start)/CLOCKS_PER_SEC<<endl;
 }
 
-void regression_with_theta_t::project_theta(){
+void param_split_with_theta_t::project_theta(){
 #ifdef USE_MPI
   //double start = clock();
   bool debug = true;
@@ -200,7 +200,7 @@ void regression_with_theta_t::project_theta(){
 #endif
 }
 
-void regression_with_theta_t::update_map_distance(){
+void param_split_with_theta_t::update_map_distance(){
 #ifdef USE_MPI
   //double start = clock();
   beta_distance = 0;
@@ -265,7 +265,7 @@ void regression_with_theta_t::update_map_distance(){
 #endif
 }
 
-float regression_with_theta_t::get_map_distance(){
+float param_split_with_theta_t::get_map_distance(){
   return this->map_distance;
 
 //  float beta_dev = 0;
@@ -281,7 +281,7 @@ float regression_with_theta_t::get_map_distance(){
 //  return beta_dev+theta_dev; 
 }
 
-void regression_with_theta_t::update_theta(){
+void param_split_with_theta_t::update_theta(){
 #ifdef USE_MPI
   //double start = clock();
   bool debug = true;
@@ -310,7 +310,7 @@ void regression_with_theta_t::update_theta(){
 
 }
 
-void regression_with_theta_t::update_beta(){
+void param_split_with_theta_t::update_beta(){
 #ifdef USE_MPI
   //double start = clock();
   bool debug = true;
@@ -352,7 +352,7 @@ void regression_with_theta_t::update_beta(){
 #endif
 }
 
-void regression_with_theta_t::loss(){
+void param_split_with_theta_t::loss(){
   // not used
   float l=0;
   for(int i=0;i<observations;++i){
@@ -362,17 +362,17 @@ void regression_with_theta_t::loss(){
   //ofs_debug<<"Loss is "<<l<<endl;
 }
 
-void regression_with_theta_t::check_constraints(){
+void param_split_with_theta_t::check_constraints(){
 }
 
-bool regression_with_theta_t::in_feasible_region(){
+bool param_split_with_theta_t::in_feasible_region(){
   float mapdist = get_map_distance();
   bool ret= (mapdist>0 && mapdist<1e-6);
   //cerr<<"IN_FEASIBLE_REGION: node "<<mpi_rank<<" returning "<<ret<<endl;
   return ret;
 }
 
-void regression_with_theta_t::parse_config_line(string & token,istringstream & iss){
+void param_split_with_theta_t::parse_config_line(string & token,istringstream & iss){
   proxmap_t::parse_config_line(token,iss);
   if (token.compare("TRAIT")==0){
     iss>>config->traitfile;
@@ -430,7 +430,7 @@ void testsvd2(int mpi_rank){
   }
 }
 
-void regression_with_theta_t::read_dataset(){
+void param_split_with_theta_t::read_dataset(){
 #ifdef USE_MPI
   // figure out the dimensions
   //
@@ -578,7 +578,7 @@ void regression_with_theta_t::read_dataset(){
 #endif
 }
 
-float regression_with_theta_t::compute_marginal_beta(float * xvec){
+float param_split_with_theta_t::compute_marginal_beta(float * xvec){
   // dot product first;
   float xxi = 0;
   float xy = 0;
@@ -591,7 +591,7 @@ float regression_with_theta_t::compute_marginal_beta(float * xvec){
   return xxi*xy;
 }
 
-void regression_with_theta_t::init_marginal_screen(){
+void param_split_with_theta_t::init_marginal_screen(){
   ostringstream oss_marginal;
   oss_marginal<<config->marginal_file_prefix<<"."<<mpi_rank<<".txt";
   ifstream ifs_marginal(oss_marginal.str().data());
@@ -628,7 +628,7 @@ void regression_with_theta_t::init_marginal_screen(){
   }
 }
 
-void regression_with_theta_t::init_xxi_inv(){
+void param_split_with_theta_t::init_xxi_inv(){
     XXI_inv = new float[observations*observations];
     ostringstream oss_xxi_inv;
     oss_xxi_inv<<config->xxi_inv_file_prefix<<"."<<mpi_rank<<".txt";
@@ -773,7 +773,7 @@ void regression_with_theta_t::init_xxi_inv(){
     }
 }
 
-void regression_with_theta_t::init(string config_file){
+void param_split_with_theta_t::init(string config_file){
 #ifdef USE_MPI
   if(this->single_run){
     MPI::Init();
@@ -789,7 +789,7 @@ void regression_with_theta_t::init(string config_file){
   if (this->slave_id>=0)  config->verbose = false;
 }
 
-void regression_with_theta_t::allocate_memory(){
+void param_split_with_theta_t::allocate_memory(){
 #ifdef USE_MPI
   ostringstream oss_debugfile;
   oss_debugfile<<"debug.rank."<<mpi_rank;
@@ -885,7 +885,7 @@ void regression_with_theta_t::allocate_memory(){
 //    }
 //  }
 }
-float regression_with_theta_t::infer_epsilon(){
+float param_split_with_theta_t::infer_epsilon(){
   float new_epsilon=0;
 #ifdef USE_MPI
   if (mu==0) return config->epsilon_max;
@@ -902,7 +902,7 @@ float regression_with_theta_t::infer_epsilon(){
   return new_epsilon;
 }
 
-float regression_with_theta_t::infer_rho(){
+float param_split_with_theta_t::infer_rho(){
   float new_rho = 0;
 #ifdef USE_MPI
   if(mu==0) return config->rho_min;
@@ -939,7 +939,7 @@ float regression_with_theta_t::infer_rho(){
   return new_rho;
 }
 
-void regression_with_theta_t::initialize(){
+void param_split_with_theta_t::initialize(){
   if (mpi_rank==0){
     ofs_debug<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
@@ -961,7 +961,7 @@ void regression_with_theta_t::initialize(){
   }
 }
 
-bool regression_with_theta_t::finalize_inner_iteration(){
+bool param_split_with_theta_t::finalize_inner_iteration(){
   //int proceed = false;
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -987,7 +987,7 @@ bool regression_with_theta_t::finalize_inner_iteration(){
   //return proceed;
 }
 
-bool regression_with_theta_t::finalize_iteration(){
+bool param_split_with_theta_t::finalize_iteration(){
   int proceed = false; 
   //int active_count = 0;
   if(mpi_rank==0){
@@ -1059,7 +1059,7 @@ bool regression_with_theta_t::finalize_iteration(){
 }
   
 
-void regression_with_theta_t::iterate(){
+void param_split_with_theta_t::iterate(){
   update_lambda();
   project_beta();
   project_theta();
@@ -1094,7 +1094,7 @@ void regression_with_theta_t::iterate(){
   ++total_iterations;
 }
 
-void regression_with_theta_t::print_output(){
+void param_split_with_theta_t::print_output(){
   if(mpi_rank==0 ){
   //if(mpi_rank==0 && active_set_size<=config->top_k){
     cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" active size: "<<active_set_size<<endl;
@@ -1119,7 +1119,7 @@ void regression_with_theta_t::print_output(){
 }
 
 
-bool regression_with_theta_t::proceed_qn_commit(){
+bool param_split_with_theta_t::proceed_qn_commit(){
   int proceed = false;
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -1132,7 +1132,7 @@ bool regression_with_theta_t::proceed_qn_commit(){
   return proceed;
 }
 
-float regression_with_theta_t::evaluate_obj(){
+float param_split_with_theta_t::evaluate_obj(){
   float obj=0;
 #ifdef USE_MPI
   int bypass = 0;
@@ -1182,7 +1182,7 @@ float regression_with_theta_t::evaluate_obj(){
   return obj;
 }
 
-void regression_with_theta_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
+void param_split_with_theta_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
 #ifdef USE_MPI
   ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
   ofs_debug.flush();
@@ -1231,7 +1231,7 @@ void regression_with_theta_t::load_matrix_data(const char *  mat_file,float * & 
 #endif
 }
 
-int regression_with_theta_t::get_qn_parameter_length(){
+int param_split_with_theta_t::get_qn_parameter_length(){
   int len = 0;
   if(mpi_rank==0){
     len = mpi_numtasks * this->observations;
@@ -1240,7 +1240,7 @@ int regression_with_theta_t::get_qn_parameter_length(){
   return len;
 }
 
-void regression_with_theta_t::get_qn_current_param(float * params){
+void param_split_with_theta_t::get_qn_current_param(float * params){
 #ifdef USE_MPI
   float all_theta[mpi_numtasks * observations];
   MPI_Gather(theta,observations,MPI_FLOAT,all_theta,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -1259,7 +1259,7 @@ void regression_with_theta_t::get_qn_current_param(float * params){
 #endif
 }
 
-void regression_with_theta_t::store_qn_current_param(float * params){
+void param_split_with_theta_t::store_qn_current_param(float * params){
 #ifdef USE_MPI
   float all_theta[mpi_numtasks * observations];
   if(mpi_rank==0){
@@ -1284,7 +1284,7 @@ void regression_with_theta_t::store_qn_current_param(float * params){
 }
 
 
-int main_regression_with_theta(int argc,char * argv[]){
+int main_param_split_with_theta(int argc,char * argv[]){
 //  if(argc<3){
 //    ofs_debug<<"Usage: <genofile> <outcome file>\n";
 //    return 1;

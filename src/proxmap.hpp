@@ -1,3 +1,4 @@
+using namespace std;
 #include<iostream>
 #include<fstream>
 #include<sstream>
@@ -5,13 +6,14 @@
 #include<math.h>
 #include<gsl/gsl_matrix.h>
 #include<gsl/gsl_linalg.h>
+#include<random_access.hpp>
+#include<plink_data.hpp>
 
 #ifdef USE_GPU
 #include<CL/cl.h>
 #include<CL/cl.hpp>
 #endif
 
-using namespace std;
 
 struct config_t{
   config_t();

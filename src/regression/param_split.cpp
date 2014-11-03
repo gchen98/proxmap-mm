@@ -12,7 +12,9 @@
 #include<gsl/gsl_linalg.h>
 #include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
-#include"regression.hpp"
+//#include<random_access.hpp>
+//#include<plink_data.hpp>
+#include"param_split.hpp"
 
 const int SMALL_BLOCK_WIDTH = 32;
 
@@ -34,13 +36,13 @@ struct byValDesc{
   }
 };
 
-regression_t::regression_t(bool single_run){
+param_split_t::param_split_t(bool single_run){
   this->single_run = single_run;
   this->total_iterations = 0;
   //cerr<<"Single run initialized\n";
 }
 
-regression_t::~regression_t(){
+param_split_t::~param_split_t(){
 #ifdef USE_MPI
   if(this->single_run){
     MPI::Finalize();
@@ -84,7 +86,7 @@ regression_t::~regression_t(){
 
 
 
-void regression_t::update_lambda(){
+void param_split_t::update_lambda(){
 #ifdef USE_MPI
   //bool run_cpu = false;
   //bool run_gpu = true;
@@ -288,7 +290,7 @@ void regression_t::update_lambda(){
 #endif
 }
 
-void regression_t::project_theta(){
+void param_split_t::project_theta(){
   bool debug = false;
   if(mpi_rank==0){
     if(debug) cerr<<"PROJECT_THETA:";
@@ -303,7 +305,7 @@ void regression_t::project_theta(){
   //MPI_Scatterv(theta_project,subject_node_sizes,subject_node_offsets,MPI_FLOAT,theta_project,sub_observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 }
 
-void regression_t::project_beta(){
+void param_split_t::project_beta(){
   //bool debug = true;
   //bool run_cpu = false; 
   //bool run_gpu = true;
@@ -398,7 +400,7 @@ void regression_t::project_beta(){
   } // if is slave
 }
 
-void regression_t::update_map_distance(){
+void param_split_t::update_map_distance(){
 #ifdef USE_MPI
   this->last_mapdist = this->map_distance;
   float theta_distance = 0;
@@ -434,11 +436,11 @@ void regression_t::update_map_distance(){
 #endif
 }
 
-float regression_t::get_map_distance(){
+float param_split_t::get_map_distance(){
   return this->map_distance;
 }
 
-void regression_t::update_theta(){
+void param_split_t::update_theta(){
 #ifdef USE_MPI
   bool debug = false;
   if(debug) cerr<<"UPDATE_THETA: Node "<<mpi_rank<<" entering\n";
@@ -459,7 +461,7 @@ void regression_t::update_theta(){
 #endif
 }
 
-void regression_t::update_beta(){
+void param_split_t::update_beta(){
 #ifdef USE_MPI
   bool debug = false;
   //double start = clock();
@@ -483,7 +485,7 @@ void regression_t::update_beta(){
 #endif
 }
 
-void regression_t::update_constrained_beta(){
+void param_split_t::update_constrained_beta(){
   // prepare to broadcast full beta vector to slaves
   //int active_indices[top_k];
   //float active_vals[top_k];
@@ -530,14 +532,14 @@ void regression_t::update_constrained_beta(){
 
 
 
-bool regression_t::in_feasible_region(){
+bool param_split_t::in_feasible_region(){
   float mapdist = get_map_distance();
   if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<this->current_mapdist_threshold<<endl;
   bool ret= (mapdist>0 && mapdist< this->current_mapdist_threshold);
   return ret;
 }
 
-void regression_t::parse_config_line(string & token,istringstream & iss){
+void param_split_t::parse_config_line(string & token,istringstream & iss){
   proxmap_t::parse_config_line(token,iss);
   if (token.compare("FAM_FILE")==0){
     iss>>config->fam_file;
@@ -603,7 +605,7 @@ void testsvd(int mpi_rank){
   }
 }
 
-void regression_t::read_dataset(){
+void param_split_t::read_dataset(){
 #ifdef USE_MPI
   // figure out the dimensions
   //
@@ -758,7 +760,7 @@ void regression_t::read_dataset(){
 #endif
 }
 
-void regression_t::parse_fam_file(const char * infile, bool * mask,int len, float * newy){
+void param_split_t::parse_fam_file(const char * infile, bool * mask,int len, float * newy){
   int maskcount = 0;
   if(config->verbose)cerr<<"Allocating Y of len "<<len<<endl;
   //newy = new float[len];
@@ -791,7 +793,7 @@ void regression_t::parse_fam_file(const char * infile, bool * mask,int len, floa
   
   
 }
-void regression_t::parse_bim_file(const char * infile, bool * mask,int len, float * means, float * precisions){
+void param_split_t::parse_bim_file(const char * infile, bool * mask,int len, float * means, float * precisions){
   int maskcount = 0;
   for(int i=0;i<all_variables;++i){
     maskcount+=mask[i];
@@ -828,7 +830,7 @@ void regression_t::parse_bim_file(const char * infile, bool * mask,int len, floa
   ifs.close();
 }
 
-//float regression_t::compute_marginal_beta(float * xvec){
+//float param_split_t::compute_marginal_beta(float * xvec){
 //  // dot product first;
 //  float xxi = 0;
 //  float xy = 0;
@@ -841,7 +843,7 @@ void regression_t::parse_bim_file(const char * infile, bool * mask,int len, floa
 //  return xxi*xy;
 //}
 
-//void regression_t::init_marginal_screen(){
+//void param_split_t::init_marginal_screen(){
 //  if(slave_id>=0){
 //    ostringstream oss_marginal;
 //    oss_marginal<<config->marginal_file_prefix<<"."<<mpi_rank<<".txt";
@@ -880,7 +882,7 @@ void regression_t::parse_bim_file(const char * infile, bool * mask,int len, floa
 //  }
 //}
 
-//void regression_t::compute_XX(){
+//void param_split_t::compute_XX(){
 //#ifdef USE_MPI
 //  int cached = false;
 //  ostringstream oss_xx;
@@ -986,7 +988,7 @@ void regression_t::parse_bim_file(const char * infile, bool * mask,int len, floa
 //#endif
 //}
 
-void regression_t::init_xxi_inv(){
+void param_split_t::init_xxi_inv(){
 #ifdef USE_MPI
   int cached  = 0;
   //ostringstream oss_xxi_inv;
@@ -1105,7 +1107,7 @@ void regression_t::init_xxi_inv(){
 #endif
 }
 
-void regression_t::init_gpu(){
+void param_split_t::init_gpu(){
 #ifdef USE_GPU
   // init GPU
   int subject_chunk_clusters = subject_chunks/BLOCK_WIDTH+(subject_chunks%BLOCK_WIDTH!=0);
@@ -1115,7 +1117,7 @@ void regression_t::init_gpu(){
   vector<string> sources;
   sources.push_back("cl_constants.h");
   sources.push_back("packedgeno.c");
-  sources.push_back("common.c");
+  sources.push_back("param_split.c");
   vector<string> paths;
   for(uint j=0;j<sources.size();++j){
     ostringstream oss;
@@ -1195,7 +1197,7 @@ void regression_t::init_gpu(){
 #endif
 }
 
-void regression_t::init(string config_file){
+void param_split_t::init(string config_file){
 #ifdef USE_MPI
   if(this->single_run){
     MPI::Init();
@@ -1214,7 +1216,7 @@ void regression_t::init(string config_file){
   if(config->verbose) cerr<<"Configuration initialized\n";
 }
 
-void regression_t::allocate_memory(){
+void param_split_t::allocate_memory(){
 #ifdef USE_MPI
   ostringstream oss_debugfile;
   oss_debugfile<<"debug.rank."<<mpi_rank;
@@ -1304,65 +1306,48 @@ void regression_t::allocate_memory(){
 #endif
 }
 
-float regression_t::infer_epsilon(){
-  float new_epsilon=0;
+float param_split_t::infer_epsilon(){
+  float new_epsilon=last_epsilon;
 #ifdef USE_MPI
-  if (mu==0) return config->epsilon_max;
-  //else if(mu==config->mu_min) return config->epsilon_max;
-  //float scaler = this->mu;
+  //if (mu==0) return config->epsilon_max;
   if (mpi_rank==0){
     ofs_debug<<"INFER_EPSILON: Inner iterate: "<<iter_rho_epsilon<<endl;
-    new_epsilon = last_epsilon;
-    if(iter_rho_epsilon==0 && track_residual && new_epsilon>config->epsilon_min) new_epsilon  = last_epsilon / config->epsilon_scale_fast;
-    
+    //if(iter_rho_epsilon==0){
+      new_epsilon = this->map_distance;
+    //}
   }
   MPI_Bcast(&new_epsilon,1,MPI_FLOAT,0,MPI_COMM_WORLD);
 #endif
   return new_epsilon;
 }
 
-float regression_t::infer_rho(){
-  float new_rho = 0;
+float param_split_t::infer_rho(){
+  float new_rho = last_rho;
 #ifdef USE_MPI
   if(mu==0) return config->rho_min;
-  //float scaler = this->mu;
   if (mpi_rank==0){
     ofs_debug<<"INFER_RHO: Inner iterate: "<<iter_rho_epsilon<<endl;
-    float saved_rho = new_rho; 
     if(iter_rho_epsilon==0){
       //cerr<<"DEBUG: residual "<<residual<<" map dist "<<map_distance<<" epsilon "<<epsilon<<endl;
       if(track_residual){
         new_rho = rho_distance_ratio * residual * sqrt(map_distance+epsilon)/map_distance;
-        //if(new_rho>=config->rho_max) new_rho = config->rho_max;
-        //if(new_rho<=config->rho_min) new_rho = config->rho_min;
         
       }else{
         bool mapdist_stalled = fabs(last_mapdist - map_distance)/last_mapdist<config->mapdist_epsilon;
-        //if(last_rho>=config->rho_max) {
         if(mapdist_stalled) {
           new_rho = last_rho * config->rho_scale_fast;
-          //new_rho = last_rho<config->rho_max?last_rho + config->rho_scale_slow:last_rho;
           cerr<<"INFER_RHO: Map dist stalled, accelerating rho increment\n";
         }else{
           new_rho = last_rho + config->rho_scale_slow;
-          //new_rho = last_rho<config->rho_max?last_rho + config->rho_scale_slow:last_rho;
-        }
-        if (in_feasible_region() ) { // the projections are feasible
-          track_residual = true;
-          cerr<<"INFER_RHO: enabling residual tracking\n";
-          //if(mapdist_stalled) this->current_mapdist_threshold = this->map_distance;
-          //cerr<<"INFER_RHO: Map distance threshold revised to "<<this->current_mapdist_threshold<<"\n";
         }
       }
       if(isinf(new_rho) || isnan(new_rho)){
-        new_rho = saved_rho;
+        new_rho = last_rho;
         cerr<<"INFER_RHO: Overflow with new rho, backtracking to "<<new_rho<<endl;
       }
-      if (config->verbose) cerr<<"NEW RHO "<<new_rho<<" LAST RHO "<<last_rho<<" RHO_MAX "<<config->rho_max<<endl;
     }else{
       new_rho = last_rho;
     }
-     //new_rho *= new_rho>config->rho_max?config->rho_scale_slow:config->rho_scale_fast;
     //}
     //new_rho = scaler * this->slaves * sqrt(this->map_distance+epsilon);
     //if (config->verbose) cerr <<"INFER_RHO: mu: "<<this->mu<<" new rho: "<<new_rho<<endl;
@@ -1372,7 +1357,7 @@ float regression_t::infer_rho(){
   return new_rho;
 }
 
-void regression_t::initialize(){
+void param_split_t::initialize(){
   if (mpi_rank==0){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
@@ -1381,7 +1366,7 @@ void regression_t::initialize(){
   
 }
 
-bool regression_t::finalize_inner_iteration(){
+bool param_split_t::finalize_inner_iteration(){
   //int proceed = false;
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -1407,7 +1392,7 @@ bool regression_t::finalize_inner_iteration(){
   //return proceed;
 }
 
-bool regression_t::finalize_iteration(){
+bool param_split_t::finalize_iteration(){
   int proceed = false; 
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -1421,8 +1406,8 @@ bool regression_t::finalize_iteration(){
     }
     diff_norm = sqrt(diff_norm);
     bool top_k_finalized = false;
-    if(rho<config->rho_min){ 
-      cerr<<"FINALIZE_ITERATION: Rho shrunk to minimum. Aborting\n";
+    if(rho > config->rho_max || this->map_distance> last_mapdist){ 
+      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Aborting\n";
       top_k_finalized = true;
     }
     if(current_BIC > last_BIC){
@@ -1459,7 +1444,7 @@ bool regression_t::finalize_iteration(){
 }
   
 
-void regression_t::iterate(){
+void param_split_t::iterate(){
   //cerr<<"ITERATE: "<<mpi_rank<<endl;
   //if(mpi_rank==0) cerr<<"updatelambda\n";
   update_lambda();
@@ -1477,7 +1462,7 @@ void regression_t::iterate(){
   ++total_iterations;
 }
 
-void regression_t::print_output(){
+void param_split_t::print_output(){
   if(mpi_rank==0 ){
   //if(mpi_rank==0 && active_set_size<=this->current_top_k){
     cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" mapdist: "<<this->map_distance<<endl;
@@ -1501,7 +1486,7 @@ void regression_t::print_output(){
 }
 
 
-bool regression_t::proceed_qn_commit(){
+bool param_split_t::proceed_qn_commit(){
   int proceed = false;
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -1514,7 +1499,7 @@ bool regression_t::proceed_qn_commit(){
   return proceed;
 }
 
-float regression_t::evaluate_obj(){
+float param_split_t::evaluate_obj(){
   float obj=0;
 #ifdef USE_MPI
   //int bypass = 0;
@@ -1548,7 +1533,7 @@ float regression_t::evaluate_obj(){
 
 // this function will do transpose a random access file into the target data matrix, subject to masks
 
-//void regression_t::load_random_access_data(random_access_t *   random_access, float * & mat, int in_variables, int in_observations,int out_observations, int out_variables, bool * observations_mask, bool * variables_mask){
+//void param_split_t::load_random_access_data(random_access_t *   random_access, float * & mat, int in_variables, int in_observations,int out_observations, int out_variables, bool * observations_mask, bool * variables_mask){
 //  
 //#ifdef USE_MPI
 //  if(out_observations==0||out_variables==0) return;
@@ -1575,7 +1560,7 @@ float regression_t::evaluate_obj(){
 //#endif
 //}
 
-//void regression_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
+//void param_split_t::load_matrix_data(const char *  mat_file,float * & mat,int input_rows, int input_cols,int output_rows, int output_cols, bool * row_mask, bool * col_mask,bool file_req, float defaultVal){
 //#ifdef USE_MPI
 //  ofs_debug<<"Loading matrix data with input dim "<<input_rows<<" by "<<input_cols<<" and output dim "<<output_rows<<" by "<<output_cols<<endl;
 //  ofs_debug.flush();
@@ -1624,7 +1609,7 @@ float regression_t::evaluate_obj(){
 //#endif
 //}
 
-int regression_t::get_qn_parameter_length(){
+int param_split_t::get_qn_parameter_length(){
   int len = 0;
   if(mpi_rank==0){
     len = this->observations + this->variables;
@@ -1632,7 +1617,7 @@ int regression_t::get_qn_parameter_length(){
   return len;
 }
 
-void regression_t::get_qn_current_param(float * params){
+void param_split_t::get_qn_current_param(float * params){
 #ifdef USE_MPI
   if(mpi_rank==0){
     int k=0;
@@ -1646,7 +1631,7 @@ void regression_t::get_qn_current_param(float * params){
 #endif
 }
 
-void regression_t::store_qn_current_param(float * params){
+void param_split_t::store_qn_current_param(float * params){
 #ifdef USE_MPI
   if(mpi_rank==0){
     int k = 0;
@@ -1664,7 +1649,7 @@ void regression_t::store_qn_current_param(float * params){
 }
 
 
-int main_regression(int argc,char * argv[]){
+int main_param_split(int argc,char * argv[]){
 //  if(argc<3){
 //    ofs_debug<<"Usage: <genofile> <outcome file>\n";
 //    return 1;

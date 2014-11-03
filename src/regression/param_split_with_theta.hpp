@@ -7,10 +7,10 @@ using namespace std;
 
 class cross_validation_t;
 
-class regression_with_theta_t:public proxmap_t{
+class param_split_with_theta_t:public proxmap_t{
 public:
-  regression_with_theta_t(bool single_run);
-  ~regression_with_theta_t();
+  param_split_with_theta_t(bool single_run);
+  ~param_split_with_theta_t();
   void init(string configfile);
   void allocate_memory();
   friend class cross_validation_t;
