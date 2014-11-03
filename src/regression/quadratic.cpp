@@ -151,7 +151,7 @@ void quadratic_t::update_beta_landweber(){
 #ifdef USE_MPI
   //bool run_cpu = false;
   //bool run_gpu = true;
-  bool debug = false;
+  //bool debug = false;
   // Begin code for Landweber update
   float inverse_lipschitz = 2./this->landweber_constant;
   //cerr<<"LIPSCHITZ CONSTANT: "<<this->landweber_constant<<endl;
@@ -817,7 +817,7 @@ void quadratic_t::allocate_memory(){
   this->constrained_beta = new float[this->variables];
   this->Xbeta_full = new float[observations];
   for(int i=0;i<observations;++i) Xbeta_full[i] = 0;
-  this->BLOCK_WIDTH = plink_data_t::BLOCK_WIDTH;
+  this->BLOCK_WIDTH = plink_data_t::PLINK_BLOCK_WIDTH;
 
   this->subject_chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
   this->snp_chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);

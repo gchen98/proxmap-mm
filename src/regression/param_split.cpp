@@ -1271,7 +1271,7 @@ void param_split_t::allocate_memory(){
   this->theta = new float[sub_observations];
   this->theta_project = new float[sub_observations];
   //init_marginal_screen();
-  this->BLOCK_WIDTH = plink_data_t::BLOCK_WIDTH;
+  this->BLOCK_WIDTH = plink_data_t::PLINK_BLOCK_WIDTH;
 
   this->subject_chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
   this->snp_chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);
