@@ -176,7 +176,7 @@ void param_split_t::update_lambda(){
         //if(slave_id==0)cerr<<endl;
         Xbeta_full[i] = xb;
         if(debug_gpu && i>(observations-10)) cerr<<" "<<i<<":"<<xb;
-        if(debug && i%1000 == 0) cerr<<" "<<i<<","<<xb;
+         //cerr<<" "<<i<<","<<xb;
       }
       if(debug) cerr<<endl;
       if(debug_gpu) cerr<<endl;
@@ -402,7 +402,6 @@ void param_split_t::project_beta(){
 
 void param_split_t::update_map_distance(){
 #ifdef USE_MPI
-  this->last_mapdist = this->map_distance;
   float theta_distance = 0;
   if(mpi_rank==0){
     for(int i=0;i<observations;++i){
@@ -1290,7 +1289,7 @@ void param_split_t::allocate_memory(){
   for(int i=0;i<this->observations;++i){
     lambda[i] = 0;
   }
-  for(int i=0;i<this->sub_observations;++i){
+ for(int i=0;i<this->sub_observations;++i){
     float init_val = 0;
     theta[i] = theta_project[i] = init_val;
   }
@@ -1314,6 +1313,7 @@ float param_split_t::infer_epsilon(){
     ofs_debug<<"INFER_EPSILON: Inner iterate: "<<iter_rho_epsilon<<endl;
     //if(iter_rho_epsilon==0){
       new_epsilon = this->map_distance;
+      if(new_epsilon==0) new_epsilon = config->epsilon_min;
     //}
   }
   MPI_Bcast(&new_epsilon,1,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -1340,6 +1340,7 @@ float param_split_t::infer_rho(){
         }else{
           new_rho = last_rho + config->rho_scale_slow;
         }
+        this->last_mapdist = this->map_distance;
       }
       if(isinf(new_rho) || isnan(new_rho)){
         new_rho = last_rho;
@@ -1360,8 +1361,6 @@ float param_split_t::infer_rho(){
 void param_split_t::initialize(){
   if (mpi_rank==0){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
-  }
-  if (this->mu == 0){
   }
   
 }
@@ -1405,14 +1404,16 @@ bool param_split_t::finalize_iteration(){
       last_beta[j] = beta[j];
     }
     diff_norm = sqrt(diff_norm);
+    bool abort = false;
     bool top_k_finalized = false;
-    if(rho > config->rho_max || this->map_distance> last_mapdist){ 
-      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Aborting\n";
+    if(rho > config->rho_max || (this->last_mapdist>0 && this->map_distance> last_mapdist)){ 
+      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
       top_k_finalized = true;
     }
     if(current_BIC > last_BIC){
       cerr<<"FINALIZE_ITERATION: BIC grew from "<<last_BIC<<" to "<<current_BIC<<". Aborting search\n";
       top_k_finalized = true;
+      abort = true;
     }
     if(in_feasible_region() && diff_norm<config->beta_epsilon){
       cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
@@ -1436,7 +1437,7 @@ bool param_split_t::finalize_iteration(){
       last_BIC = current_BIC;
       --this->current_top_k;
     }
-    proceed = !top_k_finalized || this->current_top_k >= config->top_k_min;
+    proceed = (!abort) && (!top_k_finalized || this->current_top_k >= config->top_k_min);
   }
   MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
 #endif

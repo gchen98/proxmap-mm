@@ -76,7 +76,7 @@ quadratic_t::~quadratic_t(){
 void quadratic_t::update_Xbeta(){
 #ifdef USE_MPI
   bool debug = false;
-  bool debug_gpu = (run_cpu && slave_id==0);
+  bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
   if(slave_id>=0){
     if(run_gpu){
   #ifdef USE_GPU
@@ -344,7 +344,7 @@ void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
-    bool debug_gpu = (run_cpu && slave_id==0);
+    bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
     if(run_gpu ){
 #ifdef USE_GPU
       ocl_wrapper->write_to_buffer("invec",observations,in_vec);
@@ -427,7 +427,6 @@ void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
 
 void quadratic_t::update_map_distance(){
 #ifdef USE_MPI
-  this->last_mapdist = this->map_distance;
   //MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
   if(mpi_rank==0){
     float constraint_dev=0;
@@ -858,6 +857,7 @@ float quadratic_t::infer_epsilon(){
     ofs_debug<<"INFER_EPSILON: Inner iterate: "<<iter_rho_epsilon<<endl;
     //if(iter_rho_epsilon==0){
       new_epsilon = this->map_distance;
+      if(new_epsilon==0) new_epsilon = config->epsilon_min;
     //}
   }
   MPI_Bcast(&new_epsilon,1,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -890,6 +890,7 @@ float quadratic_t::infer_rho(){
         }else{
           new_rho = last_rho + config->rho_scale_slow;
         }
+        this->last_mapdist = this->map_distance;
       }
       if(isinf(new_rho) || isnan(new_rho)){
         new_rho = last_rho;
@@ -908,8 +909,6 @@ float quadratic_t::infer_rho(){
 void quadratic_t::initialize(){
   if (mpi_rank==0){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
-  }
-  if (this->mu == 0){
   }
   
 }
@@ -932,13 +931,15 @@ bool quadratic_t::finalize_iteration(){
     }
     diff_norm = sqrt(diff_norm);
     bool top_k_finalized = false;
-    if(rho > config->rho_max || this->map_distance> last_mapdist){ 
-      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Aborting\n";
+    bool abort = false;
+    if(rho > config->rho_max || (this->last_mapdist>0 && this->map_distance> last_mapdist)){ 
+      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
       top_k_finalized = true;
     }
     if(current_BIC > last_BIC){
       cerr<<"FINALIZE_ITERATION: BIC grew from "<<last_BIC<<" to "<<current_BIC<<". Aborting search\n";
       top_k_finalized = true;
+      abort = true;
     }
     if(in_feasible_region()  && diff_norm<config->beta_epsilon){
       cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
@@ -962,7 +963,7 @@ bool quadratic_t::finalize_iteration(){
       last_BIC = current_BIC;
       --this->current_top_k;
     }
-    proceed = !top_k_finalized || this->current_top_k >= config->top_k_min;
+    proceed = (!abort) && (!top_k_finalized || this->current_top_k >= config->top_k_min);
   }
   MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
 #endif
