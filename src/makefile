@@ -1,3 +1,5 @@
+use_gpu=1
+
 include common.mk
 
 DIRS=convex_clustering regression genetree

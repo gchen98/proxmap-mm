@@ -14,6 +14,9 @@
 #include"../proxmap.hpp"
 #include<random_access.hpp>
 #include<plink_data.hpp>
+#ifdef USE_GPU
+#include<ocl_wrapper.hpp>
+#endif
 #include"quadratic.hpp"
 
 const int SMALL_BLOCK_WIDTH = 32;
@@ -710,7 +713,7 @@ void quadratic_t::init_gpu(){
     oss<<config->kernel_base<<"/"<<sources[j];
     paths.push_back(oss.str());
   }
-  bool debug_ocl = false;
+  bool debug_ocl = true;
   ocl_wrapper = new ocl_wrapper_t(debug_ocl);
   ocl_wrapper->init(paths,platform_id,device_id);
   // create kernels

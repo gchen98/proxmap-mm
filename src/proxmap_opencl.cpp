@@ -6,10 +6,10 @@ void proxmap_t::init_opencl(){
   cerr<<"Initializing OpenCL...\n";
   if(run_gpu){
   // initialize the GPU if necessary
-    int platform_id = 0;
-    //int platform_id = config->platform_id;
-    int device_id = 0;
-    //int device_id = config->device_id;
+    //int platform_id = 0;
+    int platform_id = config->platform_id;
+    //int device_id = 0;
+    int device_id = config->device_id;
     cerr<<"Initializing GPU with platform id "<<platform_id<<
     " and device id "<<device_id<<".\n";
     vector<cl::Platform> platforms;

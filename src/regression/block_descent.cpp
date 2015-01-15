@@ -14,6 +14,9 @@
 #include"../proxmap.hpp"
 #include<random_access.hpp>
 #include<plink_data.hpp>
+#ifdef USE_GPU
+#include<ocl_wrapper.hpp>
+#endif
 #include"block_descent.hpp"
 
 const int SMALL_BLOCK_WIDTH = 32;

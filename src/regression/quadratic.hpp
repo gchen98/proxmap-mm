@@ -5,9 +5,6 @@
 #endif
 //#include<random_access.hpp>
 //#include<plink_data.hpp>
-//#ifdef USE_GPU
-//#include<ocl_wrapper.hpp>
-//#endif
 
 using namespace std;
 

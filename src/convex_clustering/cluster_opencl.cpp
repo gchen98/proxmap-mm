@@ -54,12 +54,6 @@ void cluster_t::init_opencl(){
     int arg;
     //int kernelWorkGroupSize;
     arg = 0;
-    setArg(kernel_init_U,arg,p,"kernel_init_U");
-    setArg(kernel_init_U,arg,*buffer_rawdata,"kernel_init_U");
-    setArg(kernel_init_U,arg,*buffer_U,"kernel_init_U");
-    setArg(kernel_init_U,arg,*buffer_U_project,"kernel_init_U");
-    setArg(kernel_init_U,arg,*buffer_U_project_orig,"kernel_init_U");
-    arg = 0;
     setArg(kernel_update_U,arg,p,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_dist_func,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_rho,"kernel_update_U");
@@ -67,6 +61,12 @@ void cluster_t::init_opencl(){
     setArg(kernel_update_U,arg,*buffer_U_prev,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_rawdata,"kernel_update_U");
     setArg(kernel_update_U,arg,*buffer_U_project,"kernel_update_U");
+    arg = 0;
+    setArg(kernel_init_U,arg,p,"kernel_init_U");
+    setArg(kernel_init_U,arg,*buffer_rawdata,"kernel_init_U");
+    setArg(kernel_init_U,arg,*buffer_U,"kernel_init_U");
+    setArg(kernel_init_U,arg,*buffer_U_project,"kernel_init_U");
+    setArg(kernel_init_U,arg,*buffer_U_project_orig,"kernel_init_U");
     arg = 0;
     setArg(kernel_update_map_distance,arg,n,"kernel_update_map_distance");
     setArg(kernel_update_map_distance,arg,p,"kernel_update_map_distance");

@@ -84,7 +84,9 @@ void cluster_t::allocate_memory(){
   large = 1e10;
   iter = 0;
   if(run_gpu){
+#ifdef USE_GPU
     init_opencl();
+#endif
   }
   proxmap_t::allocate_memory();
 }
@@ -93,7 +95,11 @@ void cluster_t::initialize(){
   cerr<<"INITIALIZE: current regularization level mu:"<<mu<< ",last rho:"<<last_rho<<endl;
   if (mu==0){
     load_into_triangle(config->weightsfile.data(),weights,n,n);
-    if(run_gpu) update_weights_gpu();
+    if(run_gpu) {
+#ifdef USE_GPU
+      update_weights_gpu();
+#endif
+    }
     if (run_cpu){
       //cerr<<"Initializing U and its projection\n";
       bool debug_cpu = false;
@@ -110,7 +116,9 @@ void cluster_t::initialize(){
       }
     }
     if (run_gpu){
+#ifdef USE_GPU
       initialize_gpu();
+#endif
     }
     update_map_distance();
   }
@@ -233,8 +241,10 @@ float cluster_t::infer_rho(){
 
 void cluster_t::init_v_project_coeff(){
   if (run_gpu){
+#ifdef USE_GPU
     store_U_projection_gpu();
     init_v_project_coeff_gpu();
+#endif
   }
   if (run_cpu){
     for(int i=0;i<n;++i){
@@ -351,7 +361,9 @@ void cluster_t::update_projection(){
       for(int i=0;i<n*p;++i) U_project_prev[i] = U_project[i];
     }
     if (run_gpu){
+#ifdef USE_GPU
       update_projection_gpu();
+#endif
       //
       // 1) Run kernel to copy U_project into U_project_prev
       // 2) Run kernel to compute sub_fnorms and store in 
@@ -564,7 +576,9 @@ float cluster_t::get_map_distance(){
 
 void cluster_t::update_map_distance(){
   if(run_gpu){
+#ifdef USE_GPU
     update_map_distance_gpu();
+#endif
   }
   if (run_cpu){
     float norm1 = 0;
@@ -609,7 +623,9 @@ void cluster_t::update_map_distance(){
 void cluster_t::update_u(){
   //dist_func = 0;rho=2;
   if(run_gpu){
+#ifdef USE_GPU
     update_u_gpu();
+#endif
   } 
   if (run_cpu){
     bool debug = false;
@@ -670,7 +686,9 @@ void cluster_t::print_output(){
   if(print){
     if(config->verbose)cerr<<"PRINT_OUTPUT mu:"<<mu<<", last V norm:"<<last_vnorm<<", current V norm:"<<current_vnorm<<endl;
     if (run_gpu){
+#ifdef USE_GPU
       get_U_gpu();
+#endif
     }
     ostringstream oss;
     oss<<config->output_path<<"/"<<print_index<<"_rho"<<rho<<".epsilon"<<epsilon<<".mu"<<mu<<".clusters.txt";
@@ -803,7 +821,9 @@ void cluster_t::iterate(){
 
 float cluster_t::evaluate_obj(){
   if (run_gpu){
+#ifdef USE_GPU
     evaluate_obj_gpu();
+#endif
   }
   if (run_cpu){
     for(int i=0;i<n;++i){
@@ -912,7 +932,9 @@ bool cluster_t::finalize_inner_iteration(){
 }
 bool cluster_t::finalize_iteration(){
   if(run_gpu){
+#ifdef USE_GPU
     finalize_iteration_gpu();
+#endif
   }
   if(run_cpu){
     U_norm_diff = 0;

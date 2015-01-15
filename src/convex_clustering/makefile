@@ -14,6 +14,9 @@ compile: $(OBJS)
 proxmap.o: ../proxmap.cpp ../proxmap.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -c $<
 
+proxmap_opencl.o: ../proxmap_opencl.cpp ../cl_templates.cpp ../cl_constants.h ../proxmap.hpp
+	$(CC) $(CFLAGS) $(PREPROC) -c $<
+
 main.o: main.cpp ../proxmap.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -c $<
 
@@ -22,6 +25,10 @@ cluster.o: cluster.cpp cluster.hpp
 
 cluster_opencl.o: cluster_opencl.cpp cluster.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -c $<
+
+cl_templates.o: ../cl_templates.cpp ../cl_templates.hpp ../cl_constants.h
+	$(CC) $(CFLAGS) $(PREPROC) -c $<
+
 
 distance: distance.cpp 
 	$(LINKER) -o $(BINDIR)/distance $(LINK_FLAGS) $(C_FLAGS) $(PREPROC) $<
