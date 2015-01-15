@@ -6,13 +6,13 @@ using namespace std;
 #include<math.h>
 #include<gsl/gsl_matrix.h>
 #include<gsl/gsl_linalg.h>
-#include<random_access.hpp>
-#include<plink_data.hpp>
+//#include<random_access.hpp>
+//#include<plink_data.hpp>
 
 #ifdef USE_GPU
 #include<CL/cl.h>
 #include<CL/cl.hpp>
-#include<ocl_wrapper.hpp>
+//#include<ocl_wrapper.hpp>
 #endif
 
 
@@ -61,9 +61,11 @@ struct config_t{
   // regression settings
   //int total_observations;
   //int total_variables;
+  //float frobenius_norm;
   float beta_epsilon;
-  float landweber_constant;
+  float spectral_norm;
   float max_landweber;
+  string bin_geno_file;
   string xxi_file;
   string xxi_inv_file;
   string snp_bed_file;

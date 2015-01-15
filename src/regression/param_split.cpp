@@ -12,8 +12,8 @@
 #include<gsl/gsl_linalg.h>
 #include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
-//#include<random_access.hpp>
-//#include<plink_data.hpp>
+#include<random_access.hpp>
+#include<plink_data.hpp>
 #include"param_split.hpp"
 
 const int SMALL_BLOCK_WIDTH = 32;
@@ -190,7 +190,7 @@ void param_split_t::update_lambda(){
   if (do_landweber){
 //if(mpi_rank==0){
     float inverse_lipschitz = 2./this->landweber_constant;
-    //cerr<<"LIPSCHITZ CONSTANT: "<<this->landweber_constant<<endl;
+    //cerr<<"LIPSCHITZ CONSTANT: "<<this->spectral_norm<<endl;
     float norm_diff = 0;
     int iter=0,maxiter = static_cast<int>(config->max_landweber);
     int converged = 0;
@@ -257,7 +257,7 @@ void param_split_t::update_lambda(){
       if(config->verbose)cerr<<"\nLandweber iterations: "<<iter<<" norm diff: "<<norm_diff<<endl;
       for(int i=0;i<observations;++i) Xbeta_full[i] = xbeta_reduce[i];
     }
-    //landweber_constant*=.9;
+    //spectral_norm*=.9;
 //}
   }else{
     if(mpi_rank==0){
@@ -550,8 +550,8 @@ void param_split_t::parse_config_line(string & token,istringstream & iss){
     iss>>config->top_k_min;
   }else if (token.compare("TOP_K_MAX")==0){
     iss>>config->top_k_max;
-  }else if (token.compare("LANDWEBER_CONSTANT")==0){
-    iss>>config->landweber_constant;
+  }else if (token.compare("SPECTRAL_NORM")==0){
+    iss>>config->spectral_norm;
   }else if (token.compare("MAX_LANDWEBER")==0){
     iss>>config->max_landweber;
   }else if (token.compare("XXI_FILE")==0){
@@ -1275,7 +1275,7 @@ void param_split_t::allocate_memory(){
   this->subject_chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
   this->snp_chunks = variables/BLOCK_WIDTH+(variables%BLOCK_WIDTH!=0);
   // initializations
-  this->landweber_constant = config->landweber_constant;
+  this->landweber_constant = config->spectral_norm;
   this->last_mapdist = 1e10;
   this->current_mapdist_threshold = config->mapdist_threshold;
   for(int j=0;j<this->all_variables;++j){

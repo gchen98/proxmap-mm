@@ -644,8 +644,8 @@ void proxmap_t::run(){
       cerr<<"QN acceptance ratio: "<<(qn_acceptance/qn_iterates*1.)<<" QN improvement: "<<qn_obj_improvement<<"/"<<obj_improvement<<"="<<(qn_obj_improvement/obj_improvement)<<endl;
     }
 
-    proceed_mu = finalize_iteration();
     print_output();
+    proceed_mu = finalize_iteration();
     last_mu = mu;
     if (mu==0) mu = mu_min;
     else {
