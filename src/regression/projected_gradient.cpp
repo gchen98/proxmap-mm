@@ -17,7 +17,7 @@
 #ifdef USE_GPU
 #include<ocl_wrapper.hpp>
 #endif
-#include"quadratic.hpp"
+#include"projected_gradient.hpp"
 
 const int SMALL_BLOCK_WIDTH = 32;
 
@@ -39,13 +39,13 @@ struct byValDesc{
   }
 };
 
-quadratic_t::quadratic_t(bool single_run){
+projected_gradient_t::projected_gradient_t(bool single_run){
   this->single_run = single_run;
   this->total_iterations = 0;
   //cerr<<"Single run initialized\n";
 }
 
-quadratic_t::~quadratic_t(){
+projected_gradient_t::~projected_gradient_t(){
 #ifdef USE_MPI
   if(this->single_run){
     MPI::Finalize();
@@ -76,7 +76,7 @@ quadratic_t::~quadratic_t(){
 #endif
 }
 
-void quadratic_t::update_Xbeta(){
+void projected_gradient_t::update_Xbeta(){
 #ifdef USE_MPI
   bool debug = false;
   bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
@@ -133,6 +133,7 @@ void quadratic_t::update_Xbeta(){
             if(var_index<variables){
               float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[var_index])*precisions[var_index];
               xb+=g * beta[var_index];
+  //if(beta[var_index]!=0) cerr<<"Nonzero at "<<var_index<<": "<<xb<<endl;
             }
           }
         }
@@ -150,14 +151,14 @@ void quadratic_t::update_Xbeta(){
   if(mpi_rank==0){
     for(int i=0;i<observations;++i) {
       Xbeta_full[i] = xbeta_reduce[i];
-      //cerr<<"Xbeta full "<<i<<" is "<<Xbeta_full[i];
+      //if (i<20) cerr<<"Xbeta "<<i<<": "<<Xbeta_full[i]<<endl;
     }
   }
   MPI_Bcast(Xbeta_full,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 #endif
 }
 
-void quadratic_t::update_beta_landweber(){
+void projected_gradient_t::update_beta_landweber(){
 #ifdef USE_MPI
   //bool run_cpu = false;
   //bool run_gpu = true;
@@ -179,24 +180,36 @@ void quadratic_t::update_beta_landweber(){
       //} // if run gpu
       //if(run_cpu){
       for(int j=0;j<variables;++j){ 
-        new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] + dist_func*(beta[j]-constrained_beta[j]) - XtY[j]);
-        if(j<-5) cerr<<"J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<new_beta[j]<<endl;
+        new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] - XtY[j]);
+        //new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] + 0.*(beta[j]-constrained_beta[j]) - XtY[j]);
       }
       //}
     }
     MPI_Gatherv(new_beta,variables,MPI_FLOAT,new_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+    for(int j=0;j<variables;++j){
+      //if(mpi_rank==1 && j<50) cerr<<"1st J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<beta[j]<<" newbeta: "<<new_beta[j]<<endl;
+    }
+    update_constrained_beta(new_beta);
+    for(int j=0;j<variables;++j){
+      new_beta[j] = constrained_beta[j];
+    }
+    for(int j=0;j<variables;++j){
+      //if(mpi_rank==1 && j<50) cerr<<"2nd J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<beta[j]<<" newbeta: "<<new_beta[j]<<endl;
+    }
     if(mpi_rank==0){
       norm_diff = 0;
       for(int j=0;j<variables;++j){
         norm_diff+=(new_beta[j]-beta[j])*(new_beta[j]-beta[j]);
-        beta[j] = new_beta[j];
       }
       norm_diff=sqrt(norm_diff);
       converged = (norm_diff<tolerance);
       ++iter;
-      if(config->verbose)cerr<<".";
+      //if(config->verbose)cerr<<".";
     }
-    //cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
+    for(int j=0;j<variables;++j){
+        beta[j] = new_beta[j];
+    }
+    if(mpi_rank==0)cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
     MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
     MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
     //MPI_Bcast(beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -207,7 +220,7 @@ void quadratic_t::update_beta_landweber(){
 #endif
 }
 
-void quadratic_t::update_beta_CG(){
+void projected_gradient_t::update_beta_CG(){
 #ifdef USE_MPI
   //bool run_cpu = false;
   //bool run_gpu = true;
@@ -342,7 +355,7 @@ void quadratic_t::update_beta_CG(){
 }
 
 
-void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
+void projected_gradient_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   //bool debug = true;
   //bool run_cpu = false; 
   //bool run_gpu = true;
@@ -428,7 +441,7 @@ void quadratic_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   } // if is slave
 }
 
-void quadratic_t::update_map_distance(){
+void projected_gradient_t::update_map_distance(){
 #ifdef USE_MPI
   //MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
   if(mpi_rank==0){
@@ -447,19 +460,19 @@ void quadratic_t::update_map_distance(){
 #endif
 }
 
-float quadratic_t::get_map_distance(){
+float projected_gradient_t::get_map_distance(){
   return this->map_distance;
 }
 
 
 
-void quadratic_t::update_constrained_beta(){
+void projected_gradient_t::update_constrained_beta(float * tempbeta){
   // prepare to broadcast full beta vector to slaves
   int active_counter = 0;
   if(mpi_rank==0){
     multiset<beta_t,byValDesc> sorted_beta;
     for(int j=0;j<variables;++j){
-      beta_t b(j,beta[j]);
+      beta_t b(j,tempbeta[j]);
       sorted_beta.insert(b);
     }
     int j=0;
@@ -475,19 +488,19 @@ void quadratic_t::update_constrained_beta(){
     }
     //cerr<<"Active set: "<<active_counter<<endl;
   }
-  MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+  MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,constrained_beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
 }
 
 
 
-bool quadratic_t::in_feasible_region(){
+bool projected_gradient_t::in_feasible_region(){
   float mapdist = get_map_distance();
   if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<this->current_mapdist_threshold<<endl;
   bool ret= (mapdist>0 && mapdist< this->current_mapdist_threshold);
   return ret;
 }
 
-void quadratic_t::parse_config_line(string & token,istringstream & iss){
+void projected_gradient_t::parse_config_line(string & token,istringstream & iss){
   proxmap_t::parse_config_line(token,iss);
   if (token.compare("FAM_FILE")==0){
     iss>>config->fam_file;
@@ -511,7 +524,7 @@ void quadratic_t::parse_config_line(string & token,istringstream & iss){
 }
 
 
-void quadratic_t::read_dataset(){
+void projected_gradient_t::read_dataset(){
 #ifdef USE_MPI
   // figure out the dimensions
   //
@@ -628,7 +641,7 @@ void quadratic_t::read_dataset(){
 #endif
 }
 
-void quadratic_t::parse_fam_file(const char * infile, bool * mask,int len, float * newy){
+void projected_gradient_t::parse_fam_file(const char * infile, bool * mask,int len, float * newy){
   int maskcount = 0;
   if(config->verbose)cerr<<"Allocating Y of len "<<len<<endl;
   for(int i=0;i<observations;++i){
@@ -659,7 +672,7 @@ void quadratic_t::parse_fam_file(const char * infile, bool * mask,int len, float
   
   
 }
-void quadratic_t::parse_bim_file(const char * infile, bool * mask,int len, float * means, float * precisions){
+void projected_gradient_t::parse_bim_file(const char * infile, bool * mask,int len, float * means, float * precisions){
   int maskcount = 0;
   for(int i=0;i<all_variables;++i){
     maskcount+=mask[i];
@@ -696,7 +709,7 @@ void quadratic_t::parse_bim_file(const char * infile, bool * mask,int len, float
   ifs.close();
 }
 
-void quadratic_t::init_gpu(){
+void projected_gradient_t::init_gpu(){
 #ifdef USE_GPU
   // init GPU
   int subject_chunk_clusters = subject_chunks/BLOCK_WIDTH+(subject_chunks%BLOCK_WIDTH!=0);
@@ -777,7 +790,7 @@ void quadratic_t::init_gpu(){
 #endif
 }
 
-void quadratic_t::init(string config_file){
+void projected_gradient_t::init(string config_file){
 #ifdef USE_MPI
   if(this->single_run){
     MPI::Init();
@@ -793,7 +806,7 @@ void quadratic_t::init(string config_file){
   if(config->verbose) cerr<<"Configuration initialized\n";
 }
 
-void quadratic_t::allocate_memory(){
+void projected_gradient_t::allocate_memory(){
 #ifdef USE_MPI
   ostringstream oss_debugfile;
   oss_debugfile<<"debug.rank."<<mpi_rank;
@@ -852,7 +865,7 @@ void quadratic_t::allocate_memory(){
 #endif
 }
 
-float quadratic_t::infer_epsilon(){
+float projected_gradient_t::infer_epsilon(){
   float new_epsilon=last_epsilon;
 #ifdef USE_MPI
   //if (mu==0) return config->epsilon_max;
@@ -868,7 +881,7 @@ float quadratic_t::infer_epsilon(){
   return new_epsilon;
 }
 
-float quadratic_t::infer_rho(){
+float projected_gradient_t::infer_rho(){
   float new_rho = last_rho;
 #ifdef USE_MPI
   if(mu==0) return config->rho_min;
@@ -909,18 +922,18 @@ float quadratic_t::infer_rho(){
   return new_rho;
 }
 
-void quadratic_t::initialize(){
+void projected_gradient_t::initialize(){
   if (mpi_rank==0){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
   
 }
 
-bool quadratic_t::finalize_inner_iteration(){
+bool projected_gradient_t::finalize_inner_iteration(){
   return true;
 }
 
-bool quadratic_t::finalize_iteration(){
+bool projected_gradient_t::finalize_iteration(){
   int proceed = false; 
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -944,7 +957,7 @@ bool quadratic_t::finalize_iteration(){
       top_k_finalized = true;
       abort = true;
     }
-    if(in_feasible_region()  && diff_norm<config->beta_epsilon){
+    if(diff_norm<config->beta_epsilon){
       cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
       top_k_finalized = true;
     }
@@ -974,15 +987,12 @@ bool quadratic_t::finalize_iteration(){
 }
   
 
-void quadratic_t::iterate(){
+void projected_gradient_t::iterate(){
   update_beta_landweber();
-  //update_beta_CG();
-  update_constrained_beta();
-  update_map_distance();
   ++total_iterations;
 }
 
-void quadratic_t::print_output(){
+void projected_gradient_t::print_output(){
   if(mpi_rank==0 ){
   //if(mpi_rank==0 && active_set_size<=this->current_top_k){
     cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" mapdist: "<<this->map_distance<<endl;
@@ -998,7 +1008,7 @@ void quadratic_t::print_output(){
 }
 
 
-bool quadratic_t::proceed_qn_commit(){
+bool projected_gradient_t::proceed_qn_commit(){
   int proceed = false;
 #ifdef USE_MPI
   if(mpi_rank==0){
@@ -1011,7 +1021,7 @@ bool quadratic_t::proceed_qn_commit(){
   return proceed;
 }
 
-float quadratic_t::evaluate_obj(){
+float projected_gradient_t::evaluate_obj(){
   float obj=0;
 #ifdef USE_MPI
   if (mpi_rank==0){
@@ -1031,7 +1041,7 @@ float quadratic_t::evaluate_obj(){
   return obj;
 }
 
-int quadratic_t::get_qn_parameter_length(){
+int projected_gradient_t::get_qn_parameter_length(){
   int len = 0;
   if(mpi_rank==0){
     len = this->variables;
@@ -1039,7 +1049,7 @@ int quadratic_t::get_qn_parameter_length(){
   return len;
 }
 
-void quadratic_t::get_qn_current_param(float * params){
+void projected_gradient_t::get_qn_current_param(float * params){
 #ifdef USE_MPI
   if(mpi_rank==0){
     int k=0;
@@ -1053,7 +1063,7 @@ void quadratic_t::get_qn_current_param(float * params){
 #endif
 }
 
-void quadratic_t::store_qn_current_param(float * params){
+void projected_gradient_t::store_qn_current_param(float * params){
 #ifdef USE_MPI
   if(mpi_rank==0){
     int k = 0;
@@ -1069,7 +1079,7 @@ void quadratic_t::store_qn_current_param(float * params){
 }
 
 
-int main_quadratic(int argc,char * argv[]){
+int main_projected_gradient(int argc,char * argv[]){
 //  if(argc<3){
 //    ofs_debug<<"Usage: <genofile> <outcome file>\n";
 //    return 1;

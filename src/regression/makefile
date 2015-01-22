@@ -6,7 +6,7 @@ include ../common.mk
 CFLAGS+=$(GCHEN_INC_FLAGS)
 LINKFLAGS+=$(GCHEN_LIB_FLAGS)
 
-OBJS=proxmap.o param_split.o quadratic.o block_descent.o proxmap_opencl.o cl_templates.o main.o
+OBJS=proxmap.o param_split.o quadratic.o projected_gradient.o block_descent.o proxmap_opencl.o cl_templates.o main.o
 BINDIR=../../bin
 
 L0=$(BINDIR)/L0
@@ -31,6 +31,9 @@ block_descent.o: block_descent.cpp block_descent.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -c $<
 
 quadratic.o: quadratic.cpp quadratic.hpp
+	$(CC) $(CFLAGS) $(PREPROC) -c $<
+
+projected_gradient.o: projected_gradient.cpp projected_gradient.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -c $<
 
 param_split.o: param_split.cpp param_split.hpp
