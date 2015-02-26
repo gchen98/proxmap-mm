@@ -86,23 +86,31 @@ private:
   float * y; // dimension dependent variable for outcome
   float * residuals; // dimension dependent variable for outcome
   float * Xbeta_full;
+  float * negative_gradient;
 
   float * means;
   float * precisions;
   float * gradient;
-  bool * mask_n;
-  bool * mask_p;
-  //float * bdinv_z;
-  //float * bd_all_y;
-  //float * bdinv_v;
+  int * mask_n;
+  int * mask_p;
+
   float * beta_increment;
-  //float * temp_n;
-  //float * temp_p;
+  float * temp_n;
+  float * temp_p;
   // Convention for Conjugate Gradient is Ax=b
+  float * newton_A1;
+  float * newton_A1_inv;
+  float *  cg_x0;
+  float *  cg_x;
+  float *  bd_all_y0;
+  float  *  bd_all_y;
+
   //float * cg_b;
   //float * cg_x;
-  //float * cg_residuals;
-  //float * cg_conjugate_vec;
+  float * A3x;
+  float * cg_residuals;
+  float * cg_conjugate_vec;
+  float * cg_Ap;
   float * beta; // variable dimension depending on node
   float * last_beta;// variable dimension depending on node
   float * constrained_beta;// variable dimension depending on node
@@ -113,8 +121,10 @@ private:
   float * grid_bic;
   float * grid_beta;
   int total_active;
-  bool * active_indices;
-  bool * inactive_indices;
+  int last_total_active;
+  int * last_active_indices;
+  int * active_indices;
+  int * inactive_indices;
   cor_matrix_cache_t cor_matrix_cache;
 
   // IO variables
@@ -139,10 +149,10 @@ private:
   void parse_fam_file(const char * infile, bool * mask,int len,float * y);
   void parse_bim_file(const char * infile, bool * mask,int len,float * mean, float * sd);
   // in is p, out is n
-  void compute_x_times_vector(float * in_vec,bool * mask,float * out_vec,bool debug); 
+  void compute_x_times_vector(float * in_vec,int * mask,float * out_vec,bool debug); 
   // in is n, out is p
   void compute_xt_times_vector(float * in_vec,float * out_vec);
-  void compute_xt_times_vector(float * in_vec,bool * mask,float * out_vec, float  scaler);
+  void compute_xt_times_vector(float * in_vec,int * mask,float * out_vec, float  scaler);
 
   void conjugate_gradient(float * b,float * x);
   void update_constrained_beta();
@@ -160,7 +170,7 @@ private:
   float infer_epsilon();
   
   void update_Xbeta();
-  void update_Xbeta(bool * mask);
+  void update_Xbeta(int * mask);
   void update_beta_block_descent();
   void update_beta_landweber();
   void update_beta_CG();
@@ -170,6 +180,7 @@ private:
   void store_qn_current_param(float * params);
   bool proceed_qn_commit();
   float compute_marginal_beta(float * xvec);
+  bool run_landweber;
 
 };
 

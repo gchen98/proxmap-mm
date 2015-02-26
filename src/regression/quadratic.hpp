@@ -93,6 +93,9 @@ private:
   inline float c2g(char c,int shifts);
   void parse_fam_file(const char * infile, bool * mask,int len,float * y);
   void parse_bim_file(const char * infile, bool * mask,int len,float * mean, float * sd);
+  // in is p, out is n
+  void compute_x_times_vector(float * in_vec,bool * mask,float * out_vec,bool debug);
+
   void compute_xt_times_vector(float * in_vec,float * out_vec);
 
   void update_constrained_beta();

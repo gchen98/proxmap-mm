@@ -4,17 +4,14 @@
 #ifdef USE_GPU
 #include<ocl_wrapper.hpp>
 #endif
-#include"quadratic.hpp"
-#include"projected_gradient.hpp"
-#include"param_split.hpp"
-#include"param_split_with_theta.hpp"
 #include"block_descent.hpp"
+#include"iterative_hard_threshold.hpp"
 
 
 int main(int argc, char * argv[]){
   try{
     if (argc<3){
-      cerr<<"Usage: <L0 regression method [projected_gradient|quadratic|block_descent]> <configfile>\n";
+      cerr<<"Usage: <L0 regression method [iht|block_descent]> <configfile>\n";
       return 1;
     }
     int arg=0;
@@ -23,10 +20,8 @@ int main(int argc, char * argv[]){
     proxmap_t * proxmap =  NULL;
     if (analysis.compare("block_descent")==0){
       proxmap = new block_descent_t(true);
-    }else if (analysis.compare("quadratic")==0){
-      proxmap = new quadratic_t(true);
-    }else if (analysis.compare("projected_gradient")==0){
-      proxmap = new projected_gradient_t(true);
+    }else if (analysis.compare("iht")==0){
+      proxmap = new iterative_hard_threshold_t(true);
     }else{
       cerr<<"Invalid method of "<<analysis<<endl;
       return 1;

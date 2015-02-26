@@ -342,14 +342,8 @@ void proxmap_t::invert(gsl_matrix * gsl_mat, gsl_matrix * gsl_mat_inv){
 void proxmap_t::invert(gsl_matrix * gsl_mat, gsl_matrix * gsl_mat_inv, gsl_permutation * perm){
   int rows = gsl_mat->size1;
   int cols = gsl_mat->size2;
-  gsl_set_error_handler_off();
+  //gsl_set_error_handler_off();
   int signum;
-  double orig[rows*cols];
-  for(int i=0;i<rows;++i){
-    for(int j=0;j<cols;++j){
-      orig[i*cols+j] = gsl_matrix_get(gsl_mat,i,j);
-    }
-  }
   int status1 =  gsl_linalg_LU_decomp(gsl_mat,perm, &signum);
   //if (config->verbose) cerr<<"Signum: "<<signum<<endl;
   int status2 = gsl_linalg_LU_invert(gsl_mat,perm, gsl_mat_inv);
@@ -358,14 +352,21 @@ void proxmap_t::invert(gsl_matrix * gsl_mat, gsl_matrix * gsl_mat_inv, gsl_permu
   if (status1!=0 || status2!=0){
   //if (1==1){
     cerr<<"Error in LU decomp/inversion, attempting pseudoinverse\n";
+    //double * orig = new double[rows*cols];
+    for(int i=0;i<rows;++i){
+      for(int j=0;j<cols;++j){
+        //orig[i*cols+j] = gsl_matrix_get(gsl_mat,i,j);
+      }
+    }
     for(int i=0;i<rows;++i){
       for(int j=0;j<cols;++j){
         //if (j) cerr<<" ";
         //cerr<<mat[i*cols+j];
-        gsl_matrix_set(gsl_mat,i,j,orig[i*cols+j]);
+        //gsl_matrix_set(gsl_mat,i,j,orig[i*cols+j]);
       }
       //cerr<<endl;
     }
+    //delete[] orig;
     //int signum;
     status3 = pseudo_inverse(gsl_mat,gsl_mat_inv);
   }else{

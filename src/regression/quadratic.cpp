@@ -163,15 +163,19 @@ void quadratic_t::update_beta_landweber(){
   //bool run_gpu = true;
   //bool debug = false;
   // Begin code for Landweber update
-  float inverse_lipschitz = 2./this->landweber_constant;
-  //cerr<<"LIPSCHITZ CONSTANT: "<<this->landweber_constant<<endl;
+  float orig_inverse_lipschitz = 2./this->landweber_constant;
+  float inverse_lipschitz = orig_inverse_lipschitz*(1.);
+  //float inverse_lipschitz = orig_inverse_lipschitz*(1.+total_iterations/1000.);
+  if(mpi_rank==0)cerr<<"Landweber learning rates: "<<orig_inverse_lipschitz<<","<<inverse_lipschitz<<endl;
   float norm_diff = 0;
   int iter=0,maxiter = static_cast<int>(config->max_landweber);
   int converged = 0;
   float tolerance = 1e-8;
   float new_beta[variables];
+  if(config->verbose) cerr<<"LANDWEBER MAX ITER: "<<maxiter<<endl;
   while(!converged && iter<maxiter){
     update_Xbeta();
+    //for(int i=0;i<10;++i) if(slave_id==0)cerr<<"xbeta"<<i<<":"<<Xbeta_full[i]<<endl;
     compute_xt_times_vector(Xbeta_full,XtXbeta);
     if (slave_id>=0){
       //bool testgpu2 = (run_cpu && slave_id==-10);
@@ -180,7 +184,7 @@ void quadratic_t::update_beta_landweber(){
       //if(run_cpu){
       for(int j=0;j<variables;++j){ 
         new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] + dist_func*(beta[j]-constrained_beta[j]) - XtY[j]);
-        if(j<-5) cerr<<"J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<new_beta[j]<<endl;
+        if(slave_id==0 && j<5) cerr<<"J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<new_beta[j]<<","<<constrained_beta[j]<<","<<beta[j]<<endl;
       }
       //}
     }
@@ -196,13 +200,14 @@ void quadratic_t::update_beta_landweber(){
       ++iter;
       if(config->verbose)cerr<<".";
     }
-    //cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
+    if(config->verbose && mpi_rank==0)cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
     MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
     MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
     //MPI_Bcast(beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+    MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
   }
   if(mpi_rank==0){
-    if(config->verbose)cerr<<"\nLandweber iterations: "<<iter<<" norm diff: "<<norm_diff<<endl;
+    //cerr<<"\nLandweber iterations: "<<iter<<" norm diff: "<<norm_diff<<endl;
   } 
 #endif
 }
@@ -211,10 +216,11 @@ void quadratic_t::update_beta_CG(){
 #ifdef USE_MPI
   //bool run_cpu = false;
   //bool run_gpu = true;
-  bool debug = false;
+  //bool debug = false;
+  bool mask[variables];
+  for(int j=0;j<variables;++j) mask[j]=true;
   float conjugate_vec[variables];
   float residual[variables];
-  float X_CV[observations]; 
   update_Xbeta();
   compute_xt_times_vector(Xbeta_full,XtXbeta);
   //if (slave_id>=0) cerr<<"Dist func: "<<dist_func<<endl;
@@ -226,85 +232,19 @@ void quadratic_t::update_beta_CG(){
   }
   MPI_Gatherv(residual,variables,MPI_FLOAT,residual,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Gatherv(conjugate_vec,variables,MPI_FLOAT,conjugate_vec,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
-  float XtX_CV[variables];
-  float norm_diff = 0;
-  int iter=0,maxiter = static_cast<int>(config->max_landweber);
   int converged = 0;
-  float tolerance = 1e-8;
-  float new_beta[variables];
+  int iter=0,maxiter = static_cast<int>(config->max_landweber);
   while(!converged && iter<maxiter){
-  // Begin code to update X_CV
-    if(slave_id>=0){
-      bool debug_gpu = (run_cpu && slave_id==-10);
-      if(run_gpu){
-  #ifdef USE_GPU
-        ocl_wrapper->write_to_buffer("beta",variables,beta);
-        ocl_wrapper->run_kernel("update_xbeta",BLOCK_WIDTH*snp_chunks,observations,1,BLOCK_WIDTH,1,1);
-        ocl_wrapper->run_kernel("reduce_xbeta_chunks",BLOCK_WIDTH,observations,1,BLOCK_WIDTH,1,1);
-        ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_full);
-        if(debug_gpu){
-          float Xbeta_temp[observations];
-          ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_temp);
-          cerr<<"debug gpu update_lambda GPU:";
-          for(int i=0;i<observations;++i){
-            if(i>(observations-10))cerr<<" "<<i<<":"<<Xbeta_temp[i];
-          }
-          cerr<<endl;
-        }
-  #endif
-      } // if run gpu
-      if(run_cpu){
-        //for(int i=0;i<100;++i){
-        for(int i=0;i<observations;++i){
-          float xc = 0;
-          //cerr<<i<<":";
-          // emulate what we would do on the GPU
-          packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
-          float subset_geno[BLOCK_WIDTH];
-          for(int chunk=0;chunk<snp_chunks;++chunk){  // each chunk is 512 variables
-            //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
-            for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
-              // load 32 into this temporary array
-              if(chunk*SMALL_BLOCK_WIDTH+threadindex<packedstride_subjectmajor){
-                packedbatch[threadindex] = packedgeno_subjectmajor[i*
-                packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
-              }
-            }
-            for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
-              // expand 32 elements into 512 genotypes
-              int t = 0;
-              for(int b=0;b<4;++b){
-                for(int c=0;c<4;++c){
-                  subset_geno[threadindex*16+t] = 
-                  c2g(packedbatch[threadindex].geno[b],c);
-                  ++t;
-                }
-              }
-            }
-            for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
-              int var_index = chunk*BLOCK_WIDTH+threadindex;
-              if(var_index<variables){
-                float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[var_index])*precisions[var_index];
-                xc+=g * conjugate_vec[var_index];
-              }
-            }
-          }
-          X_CV[i] = xc;
-        }
-        if(debug) cerr<<endl;
-        if(debug_gpu) cerr<<endl;
-      } // if run_cpu
-    }else{
-      for(int i=0;i<observations;++i) X_CV[i] = 0;
-    }
-    float xcv_reduce[observations];
-    MPI_Reduce(X_CV,xcv_reduce,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
-    if(mpi_rank==0){
-      for(int i=0;i<observations;++i) X_CV[i] = xcv_reduce[i];
-    }
-// End code to update X_CV and X_beta
+    float norm_diff = 0;
+    float tolerance = 1e-8;
+    // Begin code to update X_CV
+    float X_CV[observations];
+    compute_x_times_vector(conjugate_vec,mask,X_CV,false);
+    float XtX_CV[variables];
     compute_xt_times_vector(X_CV,XtX_CV);
     MPI_Gatherv(XtX_CV,variables,MPI_FLOAT,XtX_CV,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+    // End code to update X_CV and X_beta
+    float new_beta[variables];
     if(mpi_rank==0){
       float cxxc = 0;
       float sq_residual = 0;
@@ -312,9 +252,9 @@ void quadratic_t::update_beta_CG(){
         sq_residual += residual[j]*residual[j];
         cxxc += conjugate_vec[j] * XtX_CV[j];
         float Alpha = sq_residual / cxxc;
-        if(j<10) cerr<<snp_node_offsets[mpi_rank]+j<<": XtX_CV: "<<XtX_CV[j]<<" alpha: "<<Alpha<<" sq_res: "<<sq_residual<<" cxxc: "<<cxxc<<endl;
+        if(j<-10) cerr<<snp_node_offsets[mpi_rank]+j<<": XtX_CV: "<<XtX_CV[j]<<" alpha: "<<Alpha<<" sq_res: "<<sq_residual<<" cxxc: "<<cxxc<<endl;
         new_beta[j] = beta[j] + Alpha * conjugate_vec[j];
-        if(j<10) cerr<<snp_node_offsets[mpi_rank]+j<<": new_beta: "<<new_beta[j]<<endl;
+        if(j<-10) cerr<<snp_node_offsets[mpi_rank]+j<<": new_beta: "<<new_beta[j]<<endl;
         residual[j] = residual[j] - Alpha * XtX_CV[j];
       }
       float sq_residual2 = 0;
@@ -323,7 +263,7 @@ void quadratic_t::update_beta_CG(){
       }
       float Beta = sq_residual2/sq_residual;
       for(int j=0;j<variables;++j){
-        conjugate_vec[j] += residual[j]*Beta*conjugate_vec[j];
+        conjugate_vec[j] += residual[j] + Beta*conjugate_vec[j];
       }
       norm_diff = 0;
       for(int j=0;j<variables;++j){
@@ -338,6 +278,90 @@ void quadratic_t::update_beta_CG(){
     MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
     MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
   }
+#endif
+}
+
+// in_vec is of dimension variables
+// out_vec is of dimension observations
+
+void quadratic_t::compute_x_times_vector(float * invec,bool * mask,float * outvec,bool debug){
+#ifdef USE_MPI
+  bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
+  float temp_vec[observations];
+  if(slave_id>=0){
+    if(run_gpu){
+  #ifdef USE_GPU
+      ocl_wrapper->write_to_buffer("beta",variables,beta);
+      ocl_wrapper->run_kernel("update_xbeta",BLOCK_WIDTH*snp_chunks,observations,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->run_kernel("reduce_xbeta_chunks",BLOCK_WIDTH,observations,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_full);
+      if(debug_gpu){
+        float Xbeta_temp[observations];
+        ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_temp);
+        cerr<<"debug gpu update_Xbeta GPU:";
+        for(int i=0;i<observations;++i){
+          if(i>(observations-10))cerr<<" "<<i<<":"<<Xbeta_temp[i];
+        }
+        cerr<<endl;
+      }
+#endif
+    } // if run gpu
+    if(run_cpu){
+      if(debug) cerr<<"compute x times vec slave: "<<slave_id<<", observation:";
+      //for(int i=0;i<100;++i){
+      if(debug_gpu) cerr<<"debug gpu x times vec CPU:";
+      for(int i=0;i<observations;++i){
+        float xb = 0;
+        //cerr<<i<<":";
+        // emulate what we would do on the GPU
+        packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
+        float subset_geno[BLOCK_WIDTH];
+        for(int chunk=0;chunk<snp_chunks;++chunk){  // each chunk is 512 variables
+          //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
+          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+            // load 32 into this temporary array
+            if(chunk*SMALL_BLOCK_WIDTH+threadindex<packedstride_subjectmajor){
+              packedbatch[threadindex] = packedgeno_subjectmajor[i*
+              packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+            }
+          }
+          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+            // expand 32 elements into 512 genotypes
+            int t = 0;
+            for(int b=0;b<4;++b){
+              for(int c=0;c<4;++c){
+                subset_geno[threadindex*16+t] = 
+                c2g(packedbatch[threadindex].geno[b],c);
+                ++t;
+              }
+            }
+          }
+          for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
+            int var_index = chunk*BLOCK_WIDTH+threadindex;
+            if(var_index<variables){
+              if(mask[var_index]){
+                float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[var_index])*precisions[var_index];
+                if(debug)cerr<<" "<<var_index<<":"<<g<<","<<invec[var_index];
+                xb+= g * invec[var_index];
+              }else{
+                if(debug)cerr<<"Slave "<<slave_id<<" at "<<i<<", skipping var index: "<<var_index<<endl;
+              }
+            }
+          }
+        }
+        temp_vec[i] = xb;
+        
+        if(debug)cerr<<" "<<i<<":"<<temp_vec[i];
+        if(debug_gpu && i>(observations-10))cerr<<" "<<i<<":"<<temp_vec[i];
+      }
+      if (debug_gpu) cerr<<endl;
+      if(debug) cerr<<endl;
+    } // if run_cpu
+  }else{
+    for(int i=0;i<observations;++i) temp_vec[i] = 0;
+  }
+  MPI_Reduce(temp_vec,outvec,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
+  MPI_Bcast(outvec,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
 #endif
 }
 
@@ -437,9 +461,9 @@ void quadratic_t::update_map_distance(){
       float dev = constrained_beta[j]==0?beta[j]:0;
       constraint_dev+=dev*dev;
     }
-    this->map_distance = constraint_dev;
+    this->map_distance = sqrt(constraint_dev);
     this->dist_func = rho/sqrt(this->map_distance+epsilon);
-    //cerr<<"UPDATE_MAP_DISTANCE: Deviances: theta: "<<theta_distance<<" beta:"<<beta_distance_reduce<<" constraint:"<<constraint_dev<<" map dist: "<<this->map_distance<<endl;
+    cerr<<"UPDATE_MAP_DISTANCE: rho: "<<rho<<" dist: "<<this->map_distance<<" dist_func: "<<dist_func<<endl;
   }
   MPI_Bcast(&this->map_distance,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Bcast(&this->dist_func,1,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -476,13 +500,17 @@ void quadratic_t::update_constrained_beta(){
     //cerr<<"Active set: "<<active_counter<<endl;
   }
   MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+  for(int j=0;j<20;++j){
+   // cerr<<"MPIRANK: "<<mpi_rank<<" J: "<<j<<" betas: "<<beta[j]<<","<<constrained_beta[j]<<endl;
+  }
 }
 
 
 
 bool quadratic_t::in_feasible_region(){
   float mapdist = get_map_distance();
-  if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<this->current_mapdist_threshold<<endl;
+  if(mpi_rank==0)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<this->current_mapdist_threshold<<endl;
+  //if(config->verbose)cerr<<"IN_FEASIBLE_REGION: mapdist: "<<mapdist<<" threshold: "<<this->current_mapdist_threshold<<endl;
   bool ret= (mapdist>0 && mapdist< this->current_mapdist_threshold);
   return ret;
 }
@@ -717,8 +745,8 @@ void quadratic_t::init_gpu(){
   ocl_wrapper = new ocl_wrapper_t(debug_ocl);
   ocl_wrapper->init(paths,platform_id,device_id);
   // create kernels
-  ocl_wrapper->create_kernel("update_xbeta");
-  ocl_wrapper->create_kernel("reduce_xbeta_chunks");
+  ocl_wrapper->create_kernel("compute_x_times_vector");
+  ocl_wrapper->create_kernel("reduce_xvec_chunks");
   ocl_wrapper->create_kernel("compute_xt_times_vector");
   ocl_wrapper->create_kernel("reduce_xt_vec_chunks");
   // create buffers
@@ -876,14 +904,15 @@ float quadratic_t::infer_rho(){
     ofs_debug<<"INFER_RHO: Inner iterate: "<<iter_rho_epsilon<<endl;
     if(iter_rho_epsilon==0){
       if (in_feasible_region()  ) { // the projections are feasible
-        //track_residual = true;
+        //cerr<<"NEW RHO WOULD BE "<< rho_distance_ratio * residual * sqrt(map_distance+epsilon)/map_distance<<endl;
         //cerr<<"INFER_RHO: enabling residual tracking\n";
+        //track_residual = true;
         //if(mapdist_stalled) this->current_mapdist_threshold = this->map_distance;
         //cerr<<"INFER_RHO: Map distance threshold revised to "<<this->current_mapdist_threshold<<"\n";
       }
       //cerr<<"DEBUG: residual "<<residual<<" map dist "<<map_distance<<" epsilon "<<epsilon<<endl;
       if(track_residual){
-        new_rho = rho_distance_ratio * residual * sqrt(map_distance+epsilon)/map_distance;
+        //new_rho = rho_distance_ratio * residual * sqrt(map_distance+epsilon)/map_distance;
         
       }else{
         bool mapdist_stalled = fabs(last_mapdist - map_distance)/last_mapdist<config->mapdist_epsilon;
@@ -936,13 +965,13 @@ bool quadratic_t::finalize_iteration(){
     bool top_k_finalized = false;
     bool abort = false;
     if(rho > config->rho_max || (this->last_mapdist>0 && this->map_distance> last_mapdist)){ 
-      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
-      top_k_finalized = true;
+      cerr<<"FINALIZE_ITERATION: Warning! Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
+      //top_k_finalized = true;
     }
     if(current_BIC > last_BIC){
-      cerr<<"FINALIZE_ITERATION: BIC grew from "<<last_BIC<<" to "<<current_BIC<<". Aborting search\n";
-      top_k_finalized = true;
-      abort = true;
+      cerr<<"FINALIZE_ITERATION: Warning! BIC grew from "<<last_BIC<<" to "<<current_BIC<<". Aborting search\n";
+      //top_k_finalized = true;
+      //abort = true;
     }
     if(in_feasible_region()  && diff_norm<config->beta_epsilon){
       cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;

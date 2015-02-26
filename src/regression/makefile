@@ -6,7 +6,7 @@ include ../common.mk
 CFLAGS+=$(GCHEN_INC_FLAGS)
 LINKFLAGS+=$(GCHEN_LIB_FLAGS)
 
-OBJS=proxmap.o param_split.o quadratic.o projected_gradient.o block_descent.o proxmap_opencl.o cl_templates.o main.o
+OBJS=proxmap.o iterative_hard_threshold.o block_descent.o proxmap_opencl.o cl_templates.o main.o
 BINDIR=../../bin
 
 L0=$(BINDIR)/L0
@@ -25,6 +25,9 @@ cl_templates.o: ../cl_templates.cpp ../cl_templates.hpp ../cl_constants.h
 
 
 main.o: main.cpp ../proxmap.hpp
+	$(CC) $(CFLAGS) $(PREPROC) -c $<
+
+iterative_hard_threshold.o: iterative_hard_threshold.cpp iterative_hard_threshold.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -c $<
 
 block_descent.o: block_descent.cpp block_descent.hpp

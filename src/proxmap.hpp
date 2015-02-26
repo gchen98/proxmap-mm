@@ -64,7 +64,7 @@ struct config_t{
   //float frobenius_norm;
   float beta_epsilon;
   float spectral_norm;
-  float max_landweber;
+  int max_landweber;
   string bin_geno_file;
   string xxi_file;
   string xxi_inv_file;

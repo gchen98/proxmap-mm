@@ -1,5 +1,6 @@
 #include<assert.h>
 #include<set>
+#include<map>
 #ifdef USE_MPI
 #include<mpi.h>
 #endif
@@ -9,13 +10,12 @@
 using namespace std;
 
 class cross_validation_t;
-//class plink_data_t;
-//class packedgeno_t;
 
-class projected_gradient_t:public proxmap_t{
+
+class iterative_hard_threshold_t:public proxmap_t{
 public:
-  projected_gradient_t(bool single_run);
-  ~projected_gradient_t();
+  iterative_hard_threshold_t(bool single_run);
+  ~iterative_hard_threshold_t();
   void init(string configfile);
   void allocate_memory();
   friend class cross_validation_t;
@@ -47,7 +47,7 @@ private:
   float last_BIC;
   float last_mapdist;
   float residual;
-  float landweber_constant;
+  float spectral_norm;
   float current_mapdist_threshold;
   int BLOCK_WIDTH;
 
@@ -61,19 +61,52 @@ private:
   float * XtY;
   float * XtXbeta;
   float * y; // dimension dependent variable for outcome
+  float * residuals; // dimension dependent variable for outcome
   float * Xbeta_full;
+  float * Xbeta_old;
+  float * negative_gradient;
 
   float * means;
   float * precisions;
+  float * gradient;
+  int * mask_n;
+  int * mask_p;
+
+  float * beta_increment;
+  float * temp_n;
+  float * temp_p;
+  // Convention for Conjugate Gradient is Ax=b
+  float * newton_A1;
+  float * newton_A1_inv;
+  float *  cg_x0;
+  float *  cg_x;
+  float *  bd_all_y0;
+  float  *  bd_all_y;
+
+  //float * cg_b;
+  //float * cg_x;
+  float * A3x;
+  float * cg_residuals;
+  float * cg_conjugate_vec;
+  float * cg_Ap;
   float * beta; // variable dimension depending on node
+  float * beta_old;// variable dimension depending on node
   float * last_beta;// variable dimension depending on node
   float * constrained_beta;// variable dimension depending on node
+  float gradient_weight;
+  float frobenius_norm;
 
   // model selection containers
   float * grid_bic;
   float * grid_beta;
+  int total_active;
+  int last_total_active;
+  int * last_active_indices;
+  int * active_indices;
+  int * inactive_indices;
 
   // IO variables
+  random_access_t * random_access_geno;
   plink_data_t * plink_data_X_subset;
   packedgeno_t * packedgeno_snpmajor;
   int packedstride_snpmajor;
@@ -93,9 +126,13 @@ private:
   inline float c2g(char c,int shifts);
   void parse_fam_file(const char * infile, bool * mask,int len,float * y);
   void parse_bim_file(const char * infile, bool * mask,int len,float * mean, float * sd);
+  // in is p, out is n
+  void compute_x_times_vector(float * in_vec,int * mask,float * out_vec,bool debug); 
+  // in is n, out is p
   void compute_xt_times_vector(float * in_vec,float * out_vec);
+  void compute_xt_times_vector(float * in_vec,int * mask,float * out_vec, float  scaler);
 
-  void update_constrained_beta(float * beta);
+  void update_constrained_beta();
   void iterate();
   bool finalize_iteration();
   bool finalize_inner_iteration();
@@ -110,6 +147,8 @@ private:
   float infer_epsilon();
   
   void update_Xbeta();
+  void update_Xbeta(int * mask);
+  void update_beta_iterative_hard_threshold();
   void update_beta_landweber();
   void update_beta_CG();
   // QN acceleration
@@ -117,10 +156,12 @@ private:
   void get_qn_current_param(float * params);
   void store_qn_current_param(float * params);
   bool proceed_qn_commit();
+  float compute_marginal_beta(float * xvec);
+  bool run_landweber;
 
 };
 
-inline float projected_gradient_t::c2g(char c,int shifts){
+inline float iterative_hard_threshold_t::c2g(char c,int shifts){
   int val = (static_cast<int>(c))>>(2*shifts) & 3;
   assert(val<4);
   return plink_data_t::plink_geno_mapping[val];

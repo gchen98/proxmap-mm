@@ -45,60 +45,15 @@ block_descent_t::block_descent_t(bool single_run){
   //cerr<<"Single run initialized\n";
 }
 
-block_descent_t::~block_descent_t(){
-#ifdef USE_MPI
-  if(this->single_run){
-    MPI::Finalize();
-  } 
-
-  if(slave_id>=0){
-    delete plink_data_X_subset;
-    delete plink_data_X_subset_subjectmajor;
-#ifdef USE_GPU
-    if(this->run_gpu) delete ocl_wrapper;
-#endif
-  }else{
-    delete random_access_geno;
-  }
-
-  delete[] mask_p;
-  //delete[] temp_p;
-  delete[]active_indices;
-  delete[]inactive_indices;
-  //delete [] cg_x;
-  //delete [] cg_b;
-  //delete [] bd_all_y;
-  //delete [] bdinv_v;
-  delete [] residuals;
-  delete [] y;
-  delete [] Xbeta_full;
-  delete[] means;
-  delete[] precisions;
-  delete [] snp_node_sizes;
-  delete [] snp_node_offsets;
-  delete [] subject_node_sizes;
-  delete [] subject_node_offsets;
-  delete [] gradient;
-  delete [] beta_increment;
-  delete [] beta;
-  delete [] last_beta;
-  delete [] constrained_beta;
-  if(config->debug_mpi){
-    ofs_debug.close();
-  }
-#endif
-}
 
 void block_descent_t::update_Xbeta(){
 #ifdef USE_MPI
-  bool *  & mask = mask_p;
-  for(int j=0;j<variables;++j) mask[j]=1;
-  update_Xbeta(mask);
+  update_Xbeta(mask_p);
   //delete[]mask;
 #endif
 }
 
-void block_descent_t::update_Xbeta(bool * mask){
+void block_descent_t::update_Xbeta(int * mask){
 #ifdef USE_MPI
   compute_x_times_vector(beta,mask,Xbeta_full, false);
 #endif
@@ -107,23 +62,25 @@ void block_descent_t::update_Xbeta(bool * mask){
 // in_vec is of dimension variables
 // out_vec is of dimension observations
 
-void block_descent_t::compute_x_times_vector(float * invec,bool * mask,float * outvec,bool debug){
+void block_descent_t::compute_x_times_vector(float * invec,int * mask,float * outvec,bool debug){
 #ifdef USE_MPI
+  //bool debug_gpu = (slave_id==0);
   bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
   float temp_vec[observations];
   if(slave_id>=0){
     if(run_gpu){
   #ifdef USE_GPU
-      ocl_wrapper->write_to_buffer("beta",variables,beta);
-      ocl_wrapper->run_kernel("update_xbeta",BLOCK_WIDTH*snp_chunks,observations,1,BLOCK_WIDTH,1,1);
-      ocl_wrapper->run_kernel("reduce_xbeta_chunks",BLOCK_WIDTH,observations,1,BLOCK_WIDTH,1,1);
-      ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_full);
+      ocl_wrapper->write_to_buffer("vec_p",variables,invec);
+      ocl_wrapper->write_to_buffer("mask_p",variables,mask);
+      ocl_wrapper->run_kernel("compute_x_times_vector",BLOCK_WIDTH*snp_chunks,observations,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->run_kernel("reduce_xvec_chunks",BLOCK_WIDTH,observations,1,BLOCK_WIDTH,1,1);
+      ocl_wrapper->read_from_buffer("xvec_full",observations,temp_vec);
       if(debug_gpu){
-        float Xbeta_temp[observations];
-        ocl_wrapper->read_from_buffer("Xbeta_full",observations,Xbeta_temp);
-        cerr<<"debug gpu update_Xbeta GPU:";
+        float outvec_temp[observations];
+        ocl_wrapper->read_from_buffer("xvec_full",observations,outvec_temp);
+        cerr<<"debug gpu update_outvec GPU:";
         for(int i=0;i<observations;++i){
-          if(i>(observations-10))cerr<<" "<<i<<":"<<Xbeta_temp[i];
+          if(i>(observations-10))cerr<<" "<<i<<":"<<outvec_temp[i];
         }
         cerr<<endl;
       }
@@ -132,7 +89,7 @@ void block_descent_t::compute_x_times_vector(float * invec,bool * mask,float * o
     if(run_cpu){
       if(debug) cerr<<"compute x times vec slave: "<<slave_id<<", observation:";
       //for(int i=0;i<100;++i){
-      if(debug_gpu) cerr<<"debug gpu x times vec CPU:";
+      if(debug_gpu) cerr<<"debug gpu update_outvec CPU:";
       for(int i=0;i<observations;++i){
         float xb = 0;
         //cerr<<i<<":";
@@ -190,13 +147,24 @@ void block_descent_t::compute_x_times_vector(float * invec,bool * mask,float * o
 
 void block_descent_t::update_beta_block_descent(){
 #ifdef USE_MPI
-  float  Xz[observations];
-  float  cg_x0[variables];
-  float  cg_x[variables];
-  float  bd_all_y0[variables];
-  float  bd_all_y[variables];
-  float  XtXz[variables];
-  int max_bdinv = 50;
+  MPI_Bcast(residuals,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
+  compute_xt_times_vector(residuals,gradient);
+  for(int j=0;j<variables;++j){
+    gradient[j]*=-gradient_weight; 
+    beta_increment[j] = gradient[j];
+    //beta_increment[j] = gradient[j] + dist_func * (beta[j]-constrained_beta[j]);
+    //if(active_indices[j] && mpi_rank==0) cerr<<j<<": GRADIENT: "<<gradient[j]<<" beta_inc: "<<beta_increment[j]<<endl;
+  }
+  //if(mpi_rank==0)cerr<<"Active set: "<<total_active<<endl;
+  //if(mpi_rank==0)cerr<<"Inactive set: "<<total_inactive<<endl;
+  //float  Xz[observations];
+  //float  cg_x0[variables];
+  //float  cg_x[variables];
+  //float  bd_all_y0[variables];
+  //float  bd_all_y[variables];
+  //float  XtXz[variables];
+  //float  * XtXz= new float[variables];
+  int max_bdinv = config->max_landweber;
   float tolerance = 1e-5;
   for(int j=0;j<variables;++j){
     cg_x0[j] = cg_x[j] = 0;
@@ -205,120 +173,107 @@ void block_descent_t::update_beta_block_descent(){
   float last_norm = 1e10;
   for(int bdinv_iter=0;bdinv_iter<max_bdinv;++bdinv_iter){
     // handle active set first
-    compute_x_times_vector(cg_x,inactive_indices,Xz,false);
-    compute_xt_times_vector(Xz,active_indices,XtXz, gradient_weight);
-    MPI_Gatherv(XtXz,variables,MPI_FLOAT,XtXz,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+    float * &  XtXz = temp_p;
+    compute_x_times_vector(cg_x,inactive_indices,temp_n,false);
+    compute_xt_times_vector(temp_n,active_indices,XtXz, gradient_weight);
     if(mpi_rank==0){
-      for(int j=0;j<variables;++j){
-        if(active_indices[j]){
-          //cerr<<"A2z "<<j<<": "<<XtXz[j]<<endl;
-        }
-      }
-    }
-    if(mpi_rank==0){
-      cerr<<"Total active: "<<total_active<<endl;
+      int total_active2 = total_active*total_active;
+      if(newton_A1==NULL) newton_A1 = new float[total_active2];
+      if(newton_A1_inv==NULL) newton_A1_inv = new float[total_active2];
+      //cerr<<"Total active: "<<total_active<<endl;
       // time to construct A1
       float temp_y[total_active];
       float bd_y[total_active];
       int y_mapping[total_active];
       int k=0;
+      int active_changed = 0;
       for(int j=0;j<variables;++j){
+        active_changed+=active_indices[j]!=last_active_indices[j];
         if(active_indices[j]){
           temp_y[k] = beta_increment[j] - XtXz[j];
           y_mapping[k] = j;
           ++k;
         }
       }
-      for(int k=0;k<total_active;++k){
-        //cerr<<"y "<<k<<": "<<temp_y[k]<<endl;
+      if(last_total_active!=total_active){
+        cerr<<"Re-allocating size of Newton's method matrices!\n";
+        delete[] newton_A1;
+        newton_A1 = new float[total_active2];
+        delete[] newton_A1_inv;
+        newton_A1_inv = new float[total_active2];
       }
-      float A1[total_active*total_active];
-      float A1_inv[total_active*total_active];
-      
-      //cerr<<"Active indices:";
-      for(int j3=0;j3<variables;++j3){
-        //if(active_indices[j3]) cerr<<" "<<j3;
-      }
-      //cerr<<endl;
-      int row = 0;
-      for(int j1=0;j1<variables;++j1){
-        if(active_indices[j1]){
-          int col = row;
-          for(int j2=j1;j2<variables;++j2){
-            if(active_indices[j2]){
-              matrix_indices_t query(j1,j2);
-              cor_matrix_cache_t::iterator it = cor_matrix_cache.find(query);
-              float dot_prod=0;
-              if(it==cor_matrix_cache.end()){
-                float vec1[observations];
-                float vec2[observations];
-                //if(total_active==20)cerr<<"Looking up "<<j1<<endl;
-                random_access_geno->extract_vec(j1,observations,vec1);
-                //if(total_active==20)cerr<<"Looking up "<<j2<<endl;
-                random_access_geno->extract_vec(j2,observations,vec2);
-                //cerr<<"Doing dot prod:\n";
-                for(int i=0;i<observations;++i){
-                  //cerr<<"j1: "<<j1<<" j2: "<<j2<<" i: "<<i<<" vec1: "<<vec1[i]<<" vec2: "<<vec2[i]<<endl;
-                  dot_prod+=vec1[i]*vec2[i];
+      if(1==1){
+        //float A1_inv[total_active*total_active];
+        int row = 0;
+        for(int j1=0;j1<variables;++j1){
+          if(active_indices[j1]){
+            int col = row;
+            for(int j2=j1;j2<variables;++j2){
+              if(active_indices[j2]){
+                matrix_indices_t query(j1,j2);
+                cor_matrix_cache_t::iterator it = cor_matrix_cache.find(query);
+                float dot_prod=0;
+                if(it==cor_matrix_cache.end()){
+                  float vec1[observations];
+                  float vec2[observations];
+                  random_access_geno->extract_vec(j1,observations,vec1);
+                  random_access_geno->extract_vec(j2,observations,vec2);
+                  for(int i=0;i<observations;++i){
+                    dot_prod+=vec1[i]*vec2[i];
+                  }
+                  cor_matrix_cache[query] = dot_prod;
+                }else{
+                  dot_prod = it->second;
                 }
-                cor_matrix_cache[query] = dot_prod;
-              }else{
-                //cerr<<" Found cache at query "<<j1<<","<<j2<<endl;
-                dot_prod = it->second;
+                dot_prod=dot_prod*gradient_weight + (j1==j2);
+                newton_A1[row*total_active+col] = dot_prod;
+                newton_A1[col*total_active+row] = dot_prod;
+                ++col;
               }
-              dot_prod=dot_prod*gradient_weight + (j1==j2);
-              //cerr<<"A At row "<<row<<" col "<<col<<endl;
-              //cerr<<"B At row "<<j1<<" col "<<j2<<endl;
-              A1[row*total_active+col] = dot_prod;
-              A1[col*total_active+row] = dot_prod;
-              //A1[j1*total_active+j2] = dot_prod;
-              //A1[j2*total_active+j1] = dot_prod;
-              ++col;
             }
+            ++row;
           }
-          ++row;
         }
-      }
-      for(int k1=0;k1<total_active;++k1){
-        for(int k2=0;k2<total_active;++k2){
-          //cerr<<" "<<A1[k1*total_active+k2];
-        }
-        //cerr<<endl;
-      }
-      invert(A1,A1_inv,total_active,total_active);
-      mmultiply(A1_inv,total_active,total_active,temp_y,1,bd_y);
+        cerr<<"Active set matrix populated\n";
+        invert(newton_A1,newton_A1_inv,total_active,total_active);
+        cerr<<"Inverted\n";
+      } 
+      mmultiply(newton_A1_inv,total_active,total_active,temp_y,1,bd_y);
+      cerr<<"saxpy done\n";
       for(int k=0;k<total_active;++k){
         bd_all_y[y_mapping[k]] = bd_y[k];
-        //cerr<<"y "<<k<<": "<<bd_all_y[y_mapping[k]]<<endl;
       }
+      cerr<<"bd_all_y mapped\n";
     }
     MPI_Scatterv(bd_all_y,snp_node_sizes,snp_node_offsets,MPI_FLOAT,bd_all_y,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
-    float  Xy[observations];
-    float  A3x[variables];
-    compute_x_times_vector(bd_all_y,active_indices,Xy, false);
-    compute_xt_times_vector(Xy,inactive_indices,A3x, gradient_weight);
-    MPI_Gatherv(A3x,variables,MPI_FLOAT,A3x,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+    //float  Xy[observations];
+    //float * & A3x = temp_p;
+    //float  A3x[variables];
+    compute_x_times_vector(bd_all_y,active_indices,temp_p, false);
+    compute_xt_times_vector(temp_p,inactive_indices,A3x, gradient_weight);
     for(int j=0;j<variables;++j){
       if(inactive_indices[j]){
         A3x[j] = beta_increment[j] - A3x[j];
-        //if(j<30) cerr<<"A2y "<<j<<":"<<A3x[j]<<endl;
       }
     }
     conjugate_gradient(A3x,cg_x);
-    float the_norm = 0;
+    float the_norm1 = 0;
+    float the_norm2 = 0;
     for(int j=0;j<variables;++j){
       if(active_indices[j]){
         float dev = bd_all_y[j]-bd_all_y0[j];
-        the_norm+=dev*dev;
+        the_norm1+=dev*dev;
       }else{
         float dev = cg_x[j]-cg_x0[j];
-        the_norm+=dev*dev;
+        the_norm2+=dev*dev;
       }
     }
+    float the_norm = the_norm1+the_norm2;
+  
     int converged = 0;
     if(mpi_rank==0){
       the_norm = sqrt(the_norm);
-      cerr<<"Block descent norm: "<<the_norm<<", last norm: "<<last_norm<<endl;
+      cerr<<"BLOCK_DESCENT: Beta change norm: "<<sqrt(the_norm1)<<","<<sqrt(the_norm2)<<endl;
       converged = the_norm< tolerance || the_norm>last_norm;
       last_norm = the_norm;
     }
@@ -336,68 +291,78 @@ void block_descent_t::update_beta_block_descent(){
     if(active_indices[j]){
       beta_increment[j] = bd_all_y[j];
     }else{
+      //beta_increment[j] = 0;
       beta_increment[j] = cg_x[j];
     }
     beta[j]-=beta_increment[j];
     //if ((mpi_rank<2 && (j<10 ||j==50 )) || (j== 1500 || (mpi_rank==2 && j==500))) cerr<<"rank "<<mpi_rank<<" j "<<j<<" beta_increment "<<beta_increment[j]<<endl; 
     //if(mpi_rank==0 && j<50) cerr<<"J "<<j<<" beta: "<<beta[j]<<endl;
   }
+  //delete[]  XtXz;
 #endif
 }
 
 void block_descent_t::conjugate_gradient(float * b, float *x){
+  //if(slave_id==0) cerr<<"CONJ_GRAD: dist_func: "<<dist_func<<endl;
   //cerr<<"Slave "<<slave_id<<" variables: "<<variables<<endl;
   float Xx[observations];
-  float residuals[variables];
-  float conjugate_vec[variables];
   float r2_old = 0;
-  float tol = 1e-10;
-  int max_step=100;
+  float tol = 1e-4;
+  int max_step=1;
+//cerr<<"B stop point\n";
+//MPI_Finalize();exit(1);
   compute_x_times_vector(x,inactive_indices,Xx, slave_id==-10);
-  compute_xt_times_vector(Xx,inactive_indices,residuals, -gradient_weight);
-  MPI_Gatherv(residuals,variables,MPI_FLOAT,residuals,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+  compute_xt_times_vector(Xx,inactive_indices,cg_residuals, -gradient_weight);
+//cerr<<"C stop point\n";
+//MPI_Finalize();exit(1);
   for(int j=0;j<variables;++j){
     if(inactive_indices[j]){
-      residuals[j]-=x[j]*(1+dist_func);
-      residuals[j]+=b[j];
-      conjugate_vec[j] = residuals[j];
-      r2_old+=residuals[j]*residuals[j];
-      //if(mpi_rank==0 && j<40) cerr<<"CG: "<<j<<": x[j]: "<<b[j]<<" A3x: "<<residuals[j]<<endl;
+      cg_residuals[j]-=x[j]*(1+dist_func);
+      cg_residuals[j]+=b[j];
+      cg_conjugate_vec[j] = cg_residuals[j];
+      r2_old+=cg_residuals[j]*cg_residuals[j];
+      //if(mpi_rank==0 && j<40) cerr<<"CG: "<<j<<": x[j]: "<<b[j]<<" A3x: "<<cg_residuals[j]<<endl;
     }else{
-      conjugate_vec[j] = 0;
+      cg_conjugate_vec[j] = 0;
     }
   }
   //if(mpi_rank==0) cerr<<"r2_old: "<<r2_old<<endl;
   float current_norm=1e10;
   float last_norm = current_norm;
+  if(config->verbose && mpi_rank==0)cerr<<"CG iterations:";
+//cerr<<"First stop point\n";
+//MPI_Finalize();exit(1);
   for(int i=0;i<max_step;++i){
+    if(config->verbose && mpi_rank==0)cerr<<".";
     float Xp[observations];
-    float Ap[variables];
-    compute_x_times_vector(conjugate_vec,inactive_indices,Xp, slave_id==-10);
-    compute_xt_times_vector(Xp,inactive_indices,Ap, +gradient_weight);
-    MPI_Gatherv(Ap,variables,MPI_FLOAT,Ap,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
+    //float cg_Ap[variables];
+    compute_x_times_vector(cg_conjugate_vec,inactive_indices,Xp, slave_id==-10);
+    compute_xt_times_vector(Xp,inactive_indices,cg_Ap, +gradient_weight);
+//cerr<<"Second stop point\n";
+//MPI_Finalize();exit(1);
     float pAp = 0;
     for(int j=0;j<variables;++j){
       if(inactive_indices[j]){
-        Ap[j]+=conjugate_vec[j]*(1+dist_func);
-        //if(j<40) cerr<<"CG: "<<j<<": rank: "<<mpi_rank<<" p: "<<conjugate_vec[j]<<endl;
-        pAp+=conjugate_vec[j]*Ap[j];
-        //if(mpi_rank==0 && j<40) cerr<<"CG: "<<j<<": Ap: "<<Ap[j]<<endl;
+        cg_Ap[j]+=cg_conjugate_vec[j]*(1+dist_func);
+        //if(j<12) cerr<<"CG: "<<j<<": rank: "<<mpi_rank<<" p: "<<cg_conjugate_vec[j]<<endl;
+        pAp+=cg_conjugate_vec[j]*cg_Ap[j];
+        //if(mpi_rank==0 && j<40) cerr<<"CG: "<<j<<": Ap: "<<cg_Ap[j]<<endl;
       }
     }
     float alpha = r2_old / pAp;
     float r2_new = 0;
     for(int j=0;j<variables;++j){
       if(inactive_indices[j]){
-        x[j] = x[j] + alpha * conjugate_vec[j];
-        residuals[j] = residuals[j] - alpha * Ap[j];
-        r2_new+=residuals[j]*residuals[j];
+        x[j] = x[j] + alpha * cg_conjugate_vec[j];
+        //if(slave_id==0 && j<12) cerr<<"CG beta,delta "<<j<<": "<<beta[j]<<","<<x[j]<<endl;
+        cg_residuals[j] = cg_residuals[j] - alpha * cg_Ap[j];
+        r2_new+=cg_residuals[j]*cg_residuals[j];
       }
     }
     int converged = 0;
     if(mpi_rank==0){
       current_norm = sqrt(r2_new);
-      cerr<<"CG norm: "<<current_norm<<endl;
+      //cerr<<"CG norm: "<<current_norm<<endl;
       converged = (current_norm< tol || current_norm> last_norm);
       last_norm = current_norm;
     }
@@ -405,12 +370,13 @@ void block_descent_t::conjugate_gradient(float * b, float *x){
     if(converged)break;
     for(int j=0;j<variables;++j){
       if(inactive_indices[j]){
-        conjugate_vec[j] = residuals[j] + (r2_new / r2_old)*conjugate_vec[j];
-        //if (mpi_rank==0 && j<40) cerr<<"CG: "<<j<<" p: "<<conjugate_vec[j]<<endl;
+        cg_conjugate_vec[j] = cg_residuals[j] + (r2_new / r2_old)*cg_conjugate_vec[j];
+        //if (mpi_rank==0 && j<40) cerr<<"CG: "<<j<<" p: "<<cg_conjugate_vec[j]<<endl;
       }
     }
     r2_old = r2_new;
   }
+  if(config->verbose && mpi_rank==0)cerr<<endl;
   //delete[]A3x;
   //delete[]Xx;
 }
@@ -418,12 +384,10 @@ void block_descent_t::conjugate_gradient(float * b, float *x){
 
 void block_descent_t::update_beta_landweber(){
 #ifdef USE_MPI
-  //bool run_cpu = false;
-  //bool run_gpu = true;
-  //bool debug = false;
+  bool debug = slave_id==-10 && total_iterations==0;
   // Begin code for Landweber update
-  float inverse_lipschitz = 2./this->spectral_norm;
-  cerr<<"LIPSCHITZ CONSTANT: "<<this->spectral_norm<<endl;
+  float learning_rate = 2./(this->spectral_norm*this->spectral_norm);
+  if(mpi_rank==0) cerr<<"Landweber learning rate at "<<learning_rate<<endl;
   float norm_diff = 0;
   int iter=0,maxiter = static_cast<int>(config->max_landweber);
   int converged = 0;
@@ -433,37 +397,31 @@ void block_descent_t::update_beta_landweber(){
     update_Xbeta();
     compute_xt_times_vector(Xbeta_full,XtXbeta);
     if (slave_id>=0){
-      //bool testgpu2 = (run_cpu && slave_id==-10);
-      //if(run_gpu){
-      //} // if run gpu
-      //if(run_cpu){
       for(int j=0;j<variables;++j){ 
-        new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j]  - XtY[j]);
-        //new_beta[j] = beta[j] - inverse_lipschitz*(XtXbeta[j] + dist_func*(beta[j]-constrained_beta[j]) - XtY[j]);
-        if(j<5) cerr<<"J:"<<j<<" XtXbeta:"<<XtXbeta[j]<<" XtY:"<<XtY[j]<<" beta: "<<new_beta[j]<<endl;
+        new_beta[j] = beta[j] - learning_rate*(XtXbeta[j]  - XtY[j]);
       }
-      //}
     }
     MPI_Gatherv(new_beta,variables,MPI_FLOAT,new_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
     if(mpi_rank==0){
       norm_diff = 0;
       for(int j=0;j<variables;++j){
         norm_diff+=(new_beta[j]-beta[j])*(new_beta[j]-beta[j]);
-        beta[j] = new_beta[j];
+	beta[j] = new_beta[j];
       }
       norm_diff=sqrt(norm_diff);
       converged = (norm_diff<tolerance);
       ++iter;
       if(config->verbose)cerr<<".";
     }
-    cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
-    MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+    if(config->verbose && mpi_rank==0)cerr<<"L2 norm at landweber: "<<norm_diff<<endl;
     MPI_Bcast(&converged,1,MPI_INT,0,MPI_COMM_WORLD);
     MPI_Bcast(&iter,1,MPI_INT,0,MPI_COMM_WORLD);
-    //MPI_Bcast(beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+    MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+    if(debug) cerr<<"done with landweber iter\n";
   }
   if(mpi_rank==0){
     if(config->verbose)cerr<<"\nLandweber iterations: "<<iter<<" norm diff: "<<norm_diff<<endl;
+    cerr<<"LANDWEBER_UPDATE: Beta change norm: "<<norm_diff<<endl;
   } 
 #endif
 }
@@ -565,7 +523,6 @@ void block_descent_t::update_beta_CG(){
     }
 // End code to update X_CV and X_beta
     compute_xt_times_vector(X_CV,XtX_CV);
-    MPI_Gatherv(XtX_CV,variables,MPI_FLOAT,XtX_CV,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
     if(mpi_rank==0){
       float cxxc = 0;
       float sq_residual = 0;
@@ -605,23 +562,30 @@ void block_descent_t::update_beta_CG(){
 
 void block_descent_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   //cerr<<"At compute_xt_times_vec 1\n";
-  bool * & mask = mask_p;
-  for(int j=0;j<variables;++j) mask[j] = true;
-  compute_xt_times_vector(in_vec, mask, out_vec,1);
+  compute_xt_times_vector(in_vec, mask_p, out_vec,1);
 }
 
 // out_vec is of dimension variables
 // in_vec is of dimension observations
-void block_descent_t::compute_xt_times_vector(float * in_vec, bool * mask,float * out_vec, float scaler){
+void block_descent_t::compute_xt_times_vector(float * in_vec, int * mask,float * out_vec, float scaler){
+  //scaler = 1;
   //bool debug = true;
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
     //cerr<<"At compute_xt_times_vec 2 with "<<variables<<" variables.\n";
+    //bool debug_gpu = slave_id==0; 
     bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
     if(run_gpu ){
 #ifdef USE_GPU
+      if(slave_id==0){
+        for(int i=200;i<230;++i){
+          //cerr<<"GPU invec "<<i<<": "<<in_vec[i]<<endl;
+        }
+      }
       ocl_wrapper->write_to_buffer("invec",observations,in_vec);
+      ocl_wrapper->write_to_buffer("mask_p",variables,mask_p);
+      ocl_wrapper->write_to_buffer("scaler",1,&scaler);
       ocl_wrapper->run_kernel("compute_xt_times_vector",BLOCK_WIDTH*subject_chunks,variables,1,BLOCK_WIDTH,1,1);
       ocl_wrapper->run_kernel("reduce_xt_vec_chunks",BLOCK_WIDTH,variables,1,BLOCK_WIDTH,1,1);
       ocl_wrapper->read_from_buffer("Xt_vec",variables,out_vec);
@@ -636,7 +600,7 @@ void block_descent_t::compute_xt_times_vector(float * in_vec, bool * mask,float 
           for(int i=0;i<subject_chunks;++i){
             //xt_y+=Xt_y_chunks[j*subject_chunks+i];
           }
-          if(j>(variables-10))cerr<<" "<<j<<":"<<Xt_temp[j];
+          if(mask[j] && j>(variables-10))cerr<<" "<<j<<":"<<Xt_temp[j];
           //if(j<10)cerr<<" "<<j<<":"<<xt_y;
         }
         cerr<<endl;
@@ -646,6 +610,11 @@ void block_descent_t::compute_xt_times_vector(float * in_vec, bool * mask,float 
     if(run_cpu){
       //if(debug) cerr<<"PROJECT_BETA slave "<<slave_id<<" variable:";
       //bool feasible = in_feasible_region();
+      if(slave_id==0){
+        for(int i=200;i<230;++i){
+          //cerr<<"CPU invec "<<i<<": "<<in_vec[i]<<endl;
+        }
+      }
       if(debug_gpu) cerr<<"debuggpu compute_xt_times_vector CPU:";
       for(int j=0;j<variables;++j){
         out_vec[j] = 0;
@@ -677,32 +646,24 @@ void block_descent_t::compute_xt_times_vector(float * in_vec, bool * mask,float 
               int obs_index = chunk*BLOCK_WIDTH+threadindex;
               if(obs_index<observations){
                 float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[j])*precisions[j];
-                //float g1=(subset_geno[threadindex]);
-                //float g2 = plink_data_X_subset->get_raw_geno(j,obs_index);
-                //if(g1!=g2) cerr<<"project-beta Mismatch at SNP: "<<j<<" obs "<<obs_index<<": "<<g<<","<<g2<<endl;
+   //if(isnan(in_vec[obs_index]) || isinf(in_vec[obs_index])){
+     //cerr<<"Exception at "<<obs_index<<"\n";
+   //}
                 out_vec[j]+= g * in_vec[obs_index];
-                //if(slave_id==0 && obs_index<100)cerr<<" "<<obs_index<<":"<<g<<":"<<y[obs_index];
+                //if(slave_id==0 && obs_index<100)cerr<<" "<<obs_index<<":"<<g<<":"<<in_vec[obs_index];
               }
             }
           }
-          //if(slave_id==0)cerr<<endl;
-          // gold standard
-          //for(int i=0;i<observations;++i){
-            //float g = 0;
-            //float g = plink_data_X_subset->get_geno(j,i);
-            //xt_y+= g * y[i];
-          //}
-          //if(j<10) cerr<<" "<<j<<":"<<out_vec[j];
-          //if(debug_gpu && j>(variables-10))cerr<<" "<<j<<":"<<out_vec[j];
-          //if(slave_id==0)cerr<<endl;
         }else{ // if mask enabled
           //cerr<<"Mask disabled at "<<j<<endl;
         } // if mask disnabled
         out_vec[j]*=scaler;
+        if(debug_gpu && mask[j] && j>(variables-10))cerr<<" "<<j<<":"<<out_vec[j];
       } // loop over variables
       if(debug_gpu) cerr<<endl;
     } // if run cpu
   } // if is slave
+  MPI_Gatherv(out_vec,variables,MPI_FLOAT,out_vec,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
 }
 
 void block_descent_t::update_map_distance(){
@@ -715,9 +676,9 @@ void block_descent_t::update_map_distance(){
       constraint_dev+=dev*dev;
     }
     this->map_distance = sqrt(constraint_dev);
-    this->dist_func = rho/this->map_distance;
+    this->dist_func = (rho/this->map_distance+epsilon);
     if(this->dist_func>1e20) this->dist_func = 1e10;
-    cerr<<"UPDATE_MAP_DISTANCE: rho: "<<rho<<" dist: "<<this->map_distance<<" dist_func: "<<dist_func<<endl;
+    cerr<<"UPDATE_DISTANCE: rho: "<<rho<<" constraint dist: "<<this->map_distance<<" scaled dist: "<<dist_func<<endl;
   }
   MPI_Bcast(&this->map_distance,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Bcast(&this->dist_func,1,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -731,8 +692,9 @@ float block_descent_t::get_map_distance(){
 
 
 void block_descent_t::update_constrained_beta(){
-  if(mpi_rank==0)cerr<<"Updating constrained beta\n";
+  if(config->verbose && mpi_rank==0)cerr<<"Updating constrained beta\n";
   // prepare to broadcast full beta vector to slaves
+  last_total_active = total_active;
   this->total_active = 0;
   if(mpi_rank==0){
     multiset<beta_t,byValDesc> sorted_beta;
@@ -745,29 +707,27 @@ void block_descent_t::update_constrained_beta(){
       beta_t b = *it;
       if (j<this->current_top_k){
         constrained_beta[b.index] = b.val;
-        //active_indices[b.index] = true;
-        //cerr<<"Index: "<<b.index<<" "<<b.val<<endl;
-        //inactive_indices[b.index] = false;
-        //++total_active;
       }else{
         constrained_beta[b.index] = 0;
-        //inactive_indices[b.index] = true;
-        //active_indices[b.index] = false;
       }
       ++j;
     }
-    //cor_matrix_cache.clear();
   }
-  MPI_Scatterv(constrained_beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,constrained_beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+  int total_inactive = 0;
   for(int j=0;j<variables;++j){
+    last_active_indices[j] = active_indices[j];
     active_indices[j] = constrained_beta[j]!=0;
     inactive_indices[j] = !active_indices[j];
     total_active+=active_indices[j];
+    total_inactive+=inactive_indices[j];
   }
-  if(mpi_rank==0)cerr<<"Active set: "<<total_active<<endl;
+  MPI_Scatterv(active_indices,snp_node_sizes,snp_node_offsets,MPI_INT,active_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
+  MPI_Scatterv(inactive_indices,snp_node_sizes,snp_node_offsets,MPI_INT,inactive_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
+  for(int j=0;j<variables;++j){
+    //cerr<<"constrained beta check: rank: "<<mpi_rank<<": "<<j<<": "<<active_indices[j]<<endl;
+    //if(active_indices[j]) cerr<<"constrained beta check: rank: "<<mpi_rank<<": "<<j<<": "<<beta[j]<<endl;
+  }
 
-  //MPI_Scatterv(active_indices,snp_node_sizes,snp_node_offsets,MPI_INT,active_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
-  //MPI_Scatterv(inactive_indices,snp_node_sizes,snp_node_offsets,MPI_INT,inactive_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
 }
 
 
@@ -1012,8 +972,8 @@ void block_descent_t::init_gpu(){
   ocl_wrapper = new ocl_wrapper_t(debug_ocl);
   ocl_wrapper->init(paths,platform_id,device_id);
   // create kernels
-  ocl_wrapper->create_kernel("update_xbeta");
-  ocl_wrapper->create_kernel("reduce_xbeta_chunks");
+  ocl_wrapper->create_kernel("compute_x_times_vector");
+  ocl_wrapper->create_kernel("reduce_xvec_chunks");
   ocl_wrapper->create_kernel("compute_xt_times_vector");
   ocl_wrapper->create_kernel("reduce_xt_vec_chunks");
   // create buffers
@@ -1021,37 +981,39 @@ void block_descent_t::init_gpu(){
   ocl_wrapper->create_buffer<packedgeno_t>("packedgeno_subjectmajor",CL_MEM_READ_ONLY,observations*packedstride_subjectmajor);
   ocl_wrapper->create_buffer<float>("means",CL_MEM_READ_ONLY,variables);
   ocl_wrapper->create_buffer<float>("precisions",CL_MEM_READ_ONLY,variables);
-  ocl_wrapper->create_buffer<float>("beta",CL_MEM_READ_ONLY,variables);
-  ocl_wrapper->create_buffer<float>("beta_project",CL_MEM_READ_WRITE,variables);
+  ocl_wrapper->create_buffer<float>("vec_p",CL_MEM_READ_ONLY,variables);
   ocl_wrapper->create_buffer<float>("invec",CL_MEM_READ_WRITE,observations);
-  ocl_wrapper->create_buffer<float>("Xbeta_full",CL_MEM_READ_WRITE,observations);
-  ocl_wrapper->create_buffer<float>("Xbeta_chunks",CL_MEM_READ_WRITE,observations * snp_chunks);
-  ocl_wrapper->create_buffer<float>("lambda",CL_MEM_READ_ONLY,observations);
+  ocl_wrapper->create_buffer<float>("xvec_chunks",CL_MEM_READ_WRITE,observations * snp_chunks);
+  ocl_wrapper->create_buffer<float>("xvec_full",CL_MEM_READ_WRITE,observations);
   ocl_wrapper->create_buffer<float>("Xt_vec_chunks",CL_MEM_READ_WRITE,variables * subject_chunks);
   ocl_wrapper->create_buffer<float>("Xt_vec",CL_MEM_READ_WRITE,variables);
+  ocl_wrapper->create_buffer<int>("mask_p",CL_MEM_READ_ONLY,variables);
+  ocl_wrapper->create_buffer<float>("scaler",CL_MEM_READ_ONLY,1);
   // initialize buffers
   ocl_wrapper->write_to_buffer("packedgeno_snpmajor",variables*packedstride_snpmajor,packedgeno_snpmajor);
   ocl_wrapper->write_to_buffer("packedgeno_subjectmajor",observations*packedstride_subjectmajor,packedgeno_subjectmajor);
   ocl_wrapper->write_to_buffer("means",variables,means);
   ocl_wrapper->write_to_buffer("precisions",variables,precisions);
+  ocl_wrapper->write_to_buffer("mask_p",variables,mask_p);
   // add Kernel arguments
-  ocl_wrapper->add_kernel_arg("update_xbeta",observations);
-  ocl_wrapper->add_kernel_arg("update_xbeta",variables);
-  ocl_wrapper->add_kernel_arg("update_xbeta",snp_chunks);
-  ocl_wrapper->add_kernel_arg("update_xbeta",packedstride_subjectmajor);
-  ocl_wrapper->add_kernel_arg("update_xbeta",*(ocl_wrapper->get_buffer("packedgeno_subjectmajor")));
-  ocl_wrapper->add_kernel_arg("update_xbeta",*(ocl_wrapper->get_buffer("Xbeta_chunks")));
-  ocl_wrapper->add_kernel_arg("update_xbeta",*(ocl_wrapper->get_buffer("beta")));
-  ocl_wrapper->add_kernel_arg("update_xbeta",*(ocl_wrapper->get_buffer("means")));
-  ocl_wrapper->add_kernel_arg("update_xbeta",*(ocl_wrapper->get_buffer("precisions")));
-  ocl_wrapper->add_kernel_arg("update_xbeta",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
-  ocl_wrapper->add_kernel_arg("update_xbeta",cl::__local(sizeof(float) * BLOCK_WIDTH));
-  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",variables);
-  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",snp_chunks);
-  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",snp_chunk_clusters);
-  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",*(ocl_wrapper->get_buffer("Xbeta_chunks")));
-  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",*(ocl_wrapper->get_buffer("Xbeta_full")));
-  ocl_wrapper->add_kernel_arg("reduce_xbeta_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",observations);
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",variables);
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",snp_chunks);
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",packedstride_subjectmajor);
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("packedgeno_subjectmajor")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("xvec_chunks")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("vec_p")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("means")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("precisions")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("mask_p")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",cl::__local(sizeof(float) * BLOCK_WIDTH));
+  ocl_wrapper->add_kernel_arg("reduce_xvec_chunks",variables);
+  ocl_wrapper->add_kernel_arg("reduce_xvec_chunks",snp_chunks);
+  ocl_wrapper->add_kernel_arg("reduce_xvec_chunks",snp_chunk_clusters);
+  ocl_wrapper->add_kernel_arg("reduce_xvec_chunks",*(ocl_wrapper->get_buffer("xvec_chunks")));
+  ocl_wrapper->add_kernel_arg("reduce_xvec_chunks",*(ocl_wrapper->get_buffer("xvec_full")));
+  ocl_wrapper->add_kernel_arg("reduce_xvec_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",observations);
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",variables);
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",subject_chunks);
@@ -1061,6 +1023,7 @@ void block_descent_t::init_gpu(){
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("invec")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("means")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("precisions")));
+  ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("mask_p")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",cl::__local(sizeof(float) * BLOCK_WIDTH));
   ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",observations);
@@ -1068,6 +1031,8 @@ void block_descent_t::init_gpu(){
   ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",subject_chunk_clusters);
   ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",*(ocl_wrapper->get_buffer("Xt_vec_chunks")));
   ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",*(ocl_wrapper->get_buffer("Xt_vec")));
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",*(ocl_wrapper->get_buffer("mask_p")));
+  ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",*(ocl_wrapper->get_buffer("scaler")));
   ocl_wrapper->add_kernel_arg("reduce_xt_vec_chunks",cl::__local(sizeof(float) * BLOCK_WIDTH));
 #endif
 }
@@ -1112,18 +1077,23 @@ void block_descent_t::allocate_memory(){
   read_dataset();
 
   // ALLOCATE MEMORY FOR ESTIMATED PARAMETERS
-  active_indices = new bool[variables];
-  inactive_indices = new bool[variables];
+  last_active_indices = new int[variables];
+  active_indices = new int[variables];
+  inactive_indices = new int[variables];
   this->last_residual = 1e10;
+  this->negative_gradient = new float[variables];
   this->residual = 0;
-  //this->temp_n = new float[observations];
-  //this->temp_p = new float[variables];
+  this->temp_n = new float[observations];
+  this->temp_p = new float[variables];
   //this->cg_x = new float[this->variables];
   //this->cg_b = new float[this->variables];
   //this->bdinv_v = new float[this->variables];
   //this->bd_all_y = new float[this->variables];
   //this->mask_n = new int[this->observations];
-  this->mask_p = new bool[this->variables];
+  this->newton_A1 = NULL;
+  this->newton_A1_inv = NULL;
+  this->mask_p = new int[this->variables];
+  for(int j=0;j<variables;++j) mask_p[j]=1;
   this->beta = new float[this->variables];
   this->gradient = new float[this->variables];
   this->beta_increment = new float[this->variables];
@@ -1132,6 +1102,16 @@ void block_descent_t::allocate_memory(){
   this->last_beta = new float[this->variables];
   this->constrained_beta = new float[this->variables];
   this->Xbeta_full = new float[observations];
+
+  A3x = new float[variables];
+  cg_residuals = new float[variables];
+  cg_conjugate_vec = new float[variables];
+  cg_Ap = new float[variables];
+  cg_x0 = new float[variables];
+  cg_x= new float[variables];
+  bd_all_y0= new float[variables];
+  bd_all_y= new float[variables];
+
   for(int i=0;i<observations;++i) Xbeta_full[i] = 0;
   this->BLOCK_WIDTH = plink_data_t::PLINK_BLOCK_WIDTH;
 
@@ -1141,6 +1121,11 @@ void block_descent_t::allocate_memory(){
   this->spectral_norm = config->spectral_norm;
   this->last_mapdist = 1e10;
   this->current_mapdist_threshold = config->mapdist_threshold;
+  for(int j=0;j<this->variables;++j){
+    last_beta[j] = beta[j] = 0;
+    constrained_beta[j] = 0;
+  }
+
   this->map_distance = 0;
   this->current_top_k = config->top_k_max;
   this->last_BIC = 1e10;
@@ -1154,7 +1139,65 @@ void block_descent_t::allocate_memory(){
 #endif
   }
   compute_xt_times_vector(y,XtY);
+  //if(mpi_rank==0)cerr<<"Initialized XtY!\n";
+  run_landweber = true;
   //MPI_Finalize();exit(1);
+#endif
+}
+
+block_descent_t::~block_descent_t(){
+#ifdef USE_MPI
+  if(this->single_run){
+    MPI::Finalize();
+  } 
+
+  if(slave_id>=0){
+    delete plink_data_X_subset;
+    delete plink_data_X_subset_subjectmajor;
+#ifdef USE_GPU
+    if(this->run_gpu) delete ocl_wrapper;
+#endif
+  }else{
+    delete random_access_geno;
+  }
+
+  delete[]A3x;
+  delete[] negative_gradient;
+  delete[]cg_residuals;
+  delete[] cg_conjugate_vec;
+  delete[]cg_Ap;
+  delete[]  cg_x0;
+  delete[]  cg_x;
+  delete[]  bd_all_y0;
+  delete[]  bd_all_y;
+  if (newton_A1!=NULL) delete[] newton_A1;
+  if (newton_A1_inv!=NULL) delete[] newton_A1_inv;
+  delete[] mask_p;
+  delete[] temp_p;
+  delete[] temp_n;
+  delete[]active_indices;
+  delete[]inactive_indices;
+  //delete [] cg_x;
+  //delete [] cg_b;
+  //delete [] bd_all_y;
+  //delete [] bdinv_v;
+  delete [] residuals;
+  delete [] y;
+  delete [] Xbeta_full;
+  delete[] means;
+  delete[] precisions;
+  delete [] snp_node_sizes;
+  delete [] snp_node_offsets;
+  delete [] subject_node_sizes;
+  delete [] subject_node_offsets;
+  delete [] gradient;
+  delete [] beta_increment;
+  delete [] beta;
+  delete [] last_beta;
+  delete [] constrained_beta;
+  if(config->debug_mpi){
+    ofs_debug.close();
+  }
 #endif
 }
 
@@ -1176,7 +1219,7 @@ float block_descent_t::infer_epsilon(){
 
 float block_descent_t::infer_rho(){
   // just return one value for this algorithm
-  return this->spectral_norm;
+  //return this->spectral_norm;
   float new_rho = last_rho;
 #ifdef USE_MPI
   if(mu==0) return config->rho_min;
@@ -1234,7 +1277,7 @@ void block_descent_t::initialize(){
   if (mpi_rank==0){
     if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
   }
-  if(this->iter_rho_epsilon==0){
+  if(this->iter_rho_epsilon==-10){
     if(mu==0){
       //this->rho = config->rho_min;
       //for(int j=0;j<this->variables;++j) beta[j]=0;
@@ -1265,9 +1308,9 @@ void block_descent_t::initialize(){
       MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
       for(int j=0;j<this->variables;++j) last_beta[j] = beta[j]; 
     }
-    update_constrained_beta();
-    update_map_distance();
-    evaluate_obj();
+    //update_constrained_beta();
+    //update_map_distance();
+    //evaluate_obj();
     //MPI_Finalize();
     //exit(0);
   }
@@ -1280,6 +1323,8 @@ bool block_descent_t::finalize_inner_iteration(){
 bool block_descent_t::finalize_iteration(){
   int proceed = false; 
 #ifdef USE_MPI
+  // compute current BIC
+  update_Xbeta(active_indices);
   if(mpi_rank==0){
     //cerr<<"In finalize iteration\n";
     float diff_norm = 0;
@@ -1293,19 +1338,32 @@ bool block_descent_t::finalize_iteration(){
     diff_norm = sqrt(diff_norm);
     bool top_k_finalized = false;
     bool abort = false;
+    cerr<<"FINALIZE_ITERATION: feasible "<<in_feasible_region()<<" diff_norm "<<diff_norm<<".\n";
     if(rho > config->rho_max || (this->last_mapdist>0 && this->map_distance> last_mapdist)){ 
-      cerr<<"FINALIZE_ITERATION: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
-      top_k_finalized = true;
+      cerr<<"FINALIZE_ITERATION: Warning: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
+      //top_k_finalized = true;
     }
+    float temp_residual = 0;
+    for(int i=0;i<observations;++i){
+      float dev=(y[i]-Xbeta_full[i]);
+      //if(i<10) cerr<<"RESIDUAL: "<<residuals[i]<<"\t"<<Xbeta_full[i]<<"\t"<<y[i]<<endl;
+      temp_residual+=dev*dev;
+    }
+    current_BIC = log(observations) * this->current_top_k + observations * log(temp_residual/observations);
     if(current_BIC > last_BIC){
       cerr<<"FINALIZE_ITERATION: Warning: BIC grew from "<<last_BIC<<" to "<<current_BIC<<".\n";
       //top_k_finalized = true;
       //abort = true;
     }
-    cerr<<"FINALIZE_ITERATION: feasible "<<in_feasible_region()<<" diff_norm "<<diff_norm<<".\n";
-    if(in_feasible_region()  && diff_norm<config->beta_epsilon){
-      cerr<<"FINALIZE_ITERATION: Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
+    if (diff_norm>config->beta_epsilon){
+      cerr<<"FINALIZE_ITERATION: Not converged. Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
+    }else{
       top_k_finalized = true;
+      if(in_feasible_region()){
+        cerr<<"FINALIZE_ITERATION: Converged! Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
+      }else{
+        cerr<<"FINALIZE_ITERATION: Aborting! Beta norm difference is "<<diff_norm<<", under threshold: "<<config->beta_epsilon<<" but not beta not feasible!"<<endl;
+      }
     }
     if (top_k_finalized){
       int p = variables;
@@ -1334,17 +1392,35 @@ bool block_descent_t::finalize_iteration(){
   
 
 void block_descent_t::iterate(){
-  update_beta_block_descent();
-  //update_beta_landweber();
-  //update_beta_CG();
+  //bool feasible = in_feasible_region();
+  if(mpi_rank==0){
+    run_landweber = true;
+    if( total_iterations && total_iterations % 10 == 0) run_landweber = false;
+    //if (this->current_top_k < config->top_k_max) run_landweber = false;
+    //if (total_iterations && feasible) run_landweber = false;
+  }
+  MPI_Bcast(&run_landweber,1,MPI_INT,0,MPI_COMM_WORLD);
+  run_landweber = total_iterations?false:true;
+  //cerr<<"ITERATE: "<<total_iterations<<": Landweber status: "<<run_landweber<<endl; 
+  if(run_landweber){
+    update_beta_landweber();
+  }else{
+    update_beta_block_descent();
+  }
   update_constrained_beta();
   update_map_distance();
+  if(mpi_rank==0){
+    for(int j=0;j<variables;++j){
+      // zero out non-active indices for this projected gradient algorithm
+      beta[j] = constrained_beta[j];
+    }
+  }
+  MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
   ++total_iterations;
-  //MPI_Finalize();
-  //exit(0);
 }
 
 void block_descent_t::print_output(){
+  if (!config->verbose) return;
   if(mpi_rank==0 ){
   //if(mpi_rank==0 && active_set_size<=this->current_top_k){
     cerr<<"Mu: "<<mu<<" rho: "<<rho<<" epsilon: "<<epsilon<<" total iterations: "<<this->total_iterations<<" mapdist: "<<this->map_distance<<endl;
@@ -1376,36 +1452,29 @@ bool block_descent_t::proceed_qn_commit(){
 float block_descent_t::evaluate_obj(){
   float obj=0;
 #ifdef USE_MPI
-  if(in_feasible_region())update_Xbeta(active_indices);
-  else update_Xbeta();
+  //if(in_feasible_region())update_Xbeta(active_indices);
+  //else update_Xbeta();
+  update_Xbeta();
   if (mpi_rank==0){
     last_residual = residual;
     residual = 0;
     for(int i=0;i<observations;++i){
       residuals[i]=(y[i]-Xbeta_full[i]);
-      //residuals[i]+=(Xbeta_full[i]-y[i])*(Xbeta_full[i]-y[i]);
       //if(i<10) cerr<<"RESIDUAL: "<<residuals[i]<<"\t"<<Xbeta_full[i]<<"\t"<<y[i]<<endl;
       residual+=residuals[i]*residuals[i];
     }
-    float loss = sqrt(residual+1.);
-    gradient_weight = 1./loss;
-    //cerr<<"Gradient weight: "<<gradient_weight<<" and rho is "<<rho<<endl;
-    //float proxdist = get_prox_dist_penalty(); 
-    obj = loss + rho * this->map_distance;
-    current_BIC = log(observations) * this->current_top_k + observations * log(residual/observations);
-    cerr<<"EVALUATE_OBJ: norm1 "<<residual<<" DIST: "<<map_distance<<" FULL: "<<obj<<" BIC: "<<current_BIC<<endl;
+    //if(config->verbose)cerr<<"Gradient weight: "<<gradient_weight<<" and rho is "<<rho<<endl;
+    float proxdist = get_prox_dist_penalty(); 
+    obj = .5*residual+proxdist;
+    //obj = loss + rho * this->map_distance;
+    cerr<<"EVALUATE_OBJ: "<<total_iterations<<": sq_residual "<<residual<<" full loss: "<<obj<<endl;
   }
-  MPI_Bcast(&gradient_weight,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Bcast(&residual,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   MPI_Bcast(residuals,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
-  compute_xt_times_vector(residuals,gradient);
-  MPI_Gatherv(gradient,variables,MPI_FLOAT,gradient,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
-  for(int j=0;j<variables;++j){
-    gradient[j]*=-gradient_weight; 
-    //if(j<10) cerr<<"GRADIENT: "<<gradient[j]<<endl;
-    beta_increment[j] = gradient[j] + dist_func * (beta[j]-constrained_beta[j]);
-  }
+  gradient_weight = 1./sqrt(residual+1.);
+  compute_xt_times_vector(residuals, negative_gradient);
+
 #endif
   return obj;
 }
