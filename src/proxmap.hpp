@@ -73,6 +73,9 @@ struct config_t{
   string bim_file;
   string fam_file;
   //float nu;  // penalty parameter
+  bool cross_validate;
+  string slice_file;
+  int best_k;
   int top_k_min;
   int top_k_max;
   bool debug_mpi;

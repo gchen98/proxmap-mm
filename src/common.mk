@@ -10,12 +10,12 @@ BOOST_LIB_FLAGS = -L/usr/lib64
 GSL_LIB_FLAGS = -lgsl -lgslcblas
 MPI_LIB_FLAGS = -L/usr/lib64/openmpi/lib
 OPENCL_INC_FLAGS = -I$(CUDA)/OpenCL/common/inc
-OPENCL_LIB_FLAGS = -L$(CUDA)/OpenCL/common/lib -lOpenCL
+OPENCL_LIB_FLAGS = -L$(CUDA)/OpenCL/common/lib -lOpenCL -locl_wrapper
+
 #OPENCL_INC_FLAGS = -I$(ATI)/include
 #OPENCL_LIB_FLAGS = -L$(ATI)/lib/x86_64 -lOpenCL
 GCHEN_INC_FLAGS = -I$(HOME)/include
-GCHEN_LIB_FLAGS = -L$(HOME)/shared_objects -lgwasutil -locl_wrapper
-
+GCHEN_LIB_FLAGS = -L$(HOME)/shared_objects -lgwasutil 
 CFLAGS = -Wall -g  $(BOOST_INC_FLAGS) $(GSL_INC_FLAGS) 
 LINKFLAGS = -g -lm  $(BOOST_LIB_FLAGS) $(GSL_LIB_FLAGS)
 
