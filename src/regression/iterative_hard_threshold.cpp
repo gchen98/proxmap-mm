@@ -12,7 +12,7 @@
 #include<gsl/gsl_linalg.h>
 #include<gsl/gsl_eigen.h>
 #include"../proxmap.hpp"
-#include<random_access.hpp>
+//#include<random_access.hpp>
 #include<plink_data.hpp>
 #ifdef USE_GPU
 #include<ocl_wrapper.hpp>
@@ -48,30 +48,33 @@ iterative_hard_threshold_t::iterative_hard_threshold_t(bool single_run){
 
 void iterative_hard_threshold_t::update_Xbeta(){
 #ifdef USE_MPI
-  update_Xbeta(mask_p);
+  update_Xbeta(mask_n,mask_p);
   //delete[]mask;
 #endif
 }
 
-void iterative_hard_threshold_t::update_Xbeta(int * mask){
+void iterative_hard_threshold_t::update_Xbeta(int * mask_n,int * mask_p){
 #ifdef USE_MPI
-  compute_x_times_vector(beta,mask,Xbeta_full, false);
+  compute_x_times_vector(beta,mask_n,mask_p,Xbeta_full, false);
 #endif
 }
 
 // in_vec is of dimension variables
 // out_vec is of dimension observations
 
-void iterative_hard_threshold_t::compute_x_times_vector(float * invec,int * mask,float * outvec,bool debug){
+void iterative_hard_threshold_t::compute_x_times_vector(float * invec,int * mask_n,int* mask_p,float * outvec,bool debug){
 #ifdef USE_MPI
   //bool debug_gpu = (slave_id==0);
   bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
   float temp_vec[observations];
   if(slave_id>=0){
+    bool benchmark = false;
+    double start = clock();
     if(run_gpu){
   #ifdef USE_GPU
       ocl_wrapper->write_to_buffer("vec_p",variables,invec);
-      ocl_wrapper->write_to_buffer("mask_p",variables,mask);
+      ocl_wrapper->write_to_buffer("mask_n",observations,mask_n);
+      ocl_wrapper->write_to_buffer("mask_p",variables,mask_p);
       ocl_wrapper->run_kernel("compute_x_times_vector",BLOCK_WIDTH*snp_chunks,observations,1,BLOCK_WIDTH,1,1);
       ocl_wrapper->run_kernel("reduce_xvec_chunks",BLOCK_WIDTH,observations,1,BLOCK_WIDTH,1,1);
       ocl_wrapper->read_from_buffer("xvec_full",observations,temp_vec);
@@ -92,51 +95,53 @@ void iterative_hard_threshold_t::compute_x_times_vector(float * invec,int * mask
       if(debug_gpu) cerr<<"debug gpu update_outvec CPU:";
       for(int i=0;i<observations;++i){
         float xb = 0;
-        //cerr<<i<<":";
-        // emulate what we would do on the GPU
-        packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
-        float subset_geno[BLOCK_WIDTH];
-        for(int chunk=0;chunk<snp_chunks;++chunk){  // each chunk is 512 variables
-          //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
-          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
-            // load 32 into this temporary array
-            if(chunk*SMALL_BLOCK_WIDTH+threadindex<packedstride_subjectmajor){
-              packedbatch[threadindex] = packedgeno_subjectmajor[i*
-              packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+        if(mask_n[i]){
+          //cerr<<i<<":";
+          // emulate what we would do on the GPU
+          packedgeno_t packedbatch[SMALL_BLOCK_WIDTH];
+          float subset_geno[BLOCK_WIDTH];
+          for(int chunk=0;chunk<snp_chunks;++chunk){  // each chunk is 512 variables
+            //if(slave_id==0)cerr<<"Working on chunk "<<chunk<<endl;
+            for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+              // load 32 into this temporary array
+              if(chunk*SMALL_BLOCK_WIDTH+threadindex<packedstride_subjectmajor){
+                packedbatch[threadindex] = packedgeno_subjectmajor[i*
+                packedstride_subjectmajor+chunk*SMALL_BLOCK_WIDTH+threadindex];
+              }
             }
-          }
-          for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
-            // expand 32 elements into 512 genotypes
-            int t = 0;
-            for(int b=0;b<4;++b){
-              for(int c=0;c<4;++c){
-                subset_geno[threadindex*16+t] = 
-                c2g(packedbatch[threadindex].geno[b],c);
-                ++t;
+            for(int threadindex=0;threadindex<SMALL_BLOCK_WIDTH;++threadindex){
+              // expand 32 elements into 512 genotypes
+              int t = 0;
+              for(int b=0;b<4;++b){
+                for(int c=0;c<4;++c){
+                  subset_geno[threadindex*16+t] = 
+                  c2g(packedbatch[threadindex].geno[b],c);
+                  ++t;
+                }
+              }
+            }
+            for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
+              int var_index = chunk*BLOCK_WIDTH+threadindex;
+              if(var_index<variables){
+                if(mask_p[var_index]){
+                  float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[var_index])*precisions[var_index];
+                  if(debug)cerr<<" "<<var_index<<":"<<g<<","<<invec[var_index];
+                  xb+= g * invec[var_index];
+                }else{
+                  if(debug)cerr<<"Slave "<<slave_id<<" at "<<i<<", skipping var index: "<<var_index<<endl;
+                }
               }
             }
           }
-          for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
-            int var_index = chunk*BLOCK_WIDTH+threadindex;
-            if(var_index<variables){
-              if(mask[var_index]){
-                float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[var_index])*precisions[var_index];
-                if(debug)cerr<<" "<<var_index<<":"<<g<<","<<invec[var_index];
-                xb+= g * invec[var_index];
-              }else{
-                if(debug)cerr<<"Slave "<<slave_id<<" at "<<i<<", skipping var index: "<<var_index<<endl;
-              }
-            }
-          }
-        }
+        } // if mask[i]
         temp_vec[i] = xb;
-        
         if(debug)cerr<<" "<<i<<":"<<temp_vec[i];
         if(debug_gpu && i>(observations-10))cerr<<" "<<i<<":"<<temp_vec[i];
       }
       if (debug_gpu) cerr<<endl;
       if(debug) cerr<<endl;
     } // if run_cpu
+    if(benchmark)cerr<<"Time for x vector: "<<(clock()-start)/CLOCKS_PER_SEC<<endl;
   }else{
     for(int i=0;i<observations;++i) temp_vec[i] = 0;
   }
@@ -158,7 +163,8 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
   }
   // Initialize X times negative gradient
   float Xd[observations];
-  compute_x_times_vector(negative_gradient,active_indices,Xd,false);
+  compute_xt_times_vector(residuals, negative_gradient);
+  compute_x_times_vector(negative_gradient,mask_n,active_indices,Xd,false);
   // compute the learning rate mu
   float mu = 0;
   int backtrack_iter = 0;
@@ -177,7 +183,8 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
           mu1+=active_indices[j]?negative_gradient[j]*negative_gradient[j]:0;
         }
         for(int i=0;i<observations;++i){
-          mu2+=Xd[i]*Xd[i];
+          mu2+=mask_n[i]?Xd[i]*Xd[i]:0;
+         
         }
         mu = mu1/mu2;
         if(config->verbose)cerr<<"Learning rate mu initialized to "<<mu<<" num is "<<mu1<<
@@ -186,11 +193,14 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
       MPI_Bcast(&mu,1,MPI_FLOAT,0,MPI_COMM_WORLD);
     }
     // do beta and Xbeta update
-    for(int j=0;j<variables;++j){
-      beta[j] = beta[j] + mu * negative_gradient[j];
+    if(slave_id>=0){
+      for(int j=0;j<variables;++j){
+        beta[j] = beta[j] + mu * negative_gradient[j];
+      }
     }
+    MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
     update_constrained_beta(); 
-    update_Xbeta();
+    update_Xbeta(mask_n,active_indices);
 
     if(mpi_rank==0){
       // compute the learning rate omega
@@ -202,8 +212,10 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
         omega1+=diff!=0?diff*diff:0;
       }
       for(int i=0;i<observations;++i){
-        float diff = Xbeta_full[i]-Xbeta_old[i];
-        omega2+=diff*diff;
+        if(mask_n[i]){
+          float diff = Xbeta_full[i]-Xbeta_old[i];
+          omega2+=diff*diff;
+        }
       }
       omega = omega1/omega2;
       converged = mu<=(.99*omega);
@@ -253,6 +265,7 @@ void iterative_hard_threshold_t::update_beta_landweber(){
     MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
     if(debug) cerr<<"done with landweber iter\n";
   }
+  update_Xbeta();
   if(mpi_rank==0){
     if(config->verbose)cerr<<"\nLandweber iterations: "<<iter<<" norm diff: "<<norm_diff<<endl;
     cerr<<"LANDWEBER_UPDATE: Beta change norm: "<<norm_diff<<endl;
@@ -396,12 +409,12 @@ void iterative_hard_threshold_t::update_beta_CG(){
 
 void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   //cerr<<"At compute_xt_times_vec 1\n";
-  compute_xt_times_vector(in_vec, mask_p, out_vec,1);
+  compute_xt_times_vector(in_vec,mask_n, mask_p, out_vec,1);
 }
 
 // out_vec is of dimension variables
 // in_vec is of dimension observations
-void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * mask,float * out_vec, float scaler){
+void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * mask_n,int * mask_p,float * out_vec, float scaler){
   //scaler = 1;
   //bool debug = true;
   //bool run_cpu = false; 
@@ -418,6 +431,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
         }
       }
       ocl_wrapper->write_to_buffer("invec",observations,in_vec);
+      ocl_wrapper->write_to_buffer("mask_n",observations,mask_n);
       ocl_wrapper->write_to_buffer("mask_p",variables,mask_p);
       ocl_wrapper->write_to_buffer("scaler",1,&scaler);
       ocl_wrapper->run_kernel("compute_xt_times_vector",BLOCK_WIDTH*subject_chunks,variables,1,BLOCK_WIDTH,1,1);
@@ -434,7 +448,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
           for(int i=0;i<subject_chunks;++i){
             //xt_y+=Xt_y_chunks[j*subject_chunks+i];
           }
-          if(mask[j] && j>(variables-10))cerr<<" "<<j<<":"<<Xt_temp[j];
+          if(mask_p[j] && j>(variables-10))cerr<<" "<<j<<":"<<Xt_temp[j];
           //if(j<10)cerr<<" "<<j<<":"<<xt_y;
         }
         cerr<<endl;
@@ -452,7 +466,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
       if(debug_gpu) cerr<<"debuggpu compute_xt_times_vector CPU:";
       for(int j=0;j<variables;++j){
         out_vec[j] = 0;
-        if(mask[j]){
+        if(mask_p[j]){
           // emulate what we would do on the GPU
           int SMALL_BLOCK_WIDTH = 32;
           int chunks = observations/BLOCK_WIDTH+(observations%BLOCK_WIDTH!=0);
@@ -478,7 +492,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
             }
             for(int threadindex = 0;threadindex<BLOCK_WIDTH;++threadindex){
               int obs_index = chunk*BLOCK_WIDTH+threadindex;
-              if(obs_index<observations){
+              if(obs_index<observations && mask_n[obs_index]){
                 float g=subset_geno[threadindex]==9?0:(subset_geno[threadindex]-means[j])*precisions[j];
    //if(isnan(in_vec[obs_index]) || isinf(in_vec[obs_index])){
      //cerr<<"Exception at "<<obs_index<<"\n";
@@ -489,10 +503,9 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
             }
           }
         }else{ // if mask enabled
-          //cerr<<"Mask disabled at "<<j<<endl;
         } // if mask disnabled
         out_vec[j]*=scaler;
-        if(debug_gpu && mask[j] && j>(variables-10))cerr<<" "<<j<<":"<<out_vec[j];
+        if(debug_gpu && mask_p[j] && j>(variables-10))cerr<<" "<<j<<":"<<out_vec[j];
       } // loop over variables
       if(debug_gpu) cerr<<endl;
     } // if run cpu
@@ -549,15 +562,17 @@ void iterative_hard_threshold_t::update_constrained_beta(){
   }
   //int total_inactive = 0;
   for(int j=0;j<variables;++j){
-    last_active_indices[j] = active_indices[j];
-    active_indices[j] = constrained_beta[j]!=0;
-    //inactive_indices[j] = !active_indices[j];
-    total_active+=active_indices[j];
-    //total_inactive+=inactive_indices[j];
     beta[j] = constrained_beta[j];
   }
   MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
-  MPI_Scatterv(active_indices,snp_node_sizes,snp_node_offsets,MPI_INT,active_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
+  for(int j=0;j<variables;++j){
+    last_active_indices[j] = active_indices[j];
+    active_indices[j] = beta[j]!=0;
+    //inactive_indices[j] = !active_indices[j];
+    total_active+=active_indices[j];
+    //total_inactive+=inactive_indices[j];
+  }
+  //MPI_Scatterv(active_indices,snp_node_sizes,snp_node_offsets,MPI_INT,active_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
   //MPI_Scatterv(inactive_indices,snp_node_sizes,snp_node_offsets,MPI_INT,inactive_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
   for(int j=0;j<variables;++j){
     //cerr<<"constrained beta check: rank: "<<mpi_rank<<": "<<j<<": "<<active_indices[j]<<endl;
@@ -585,6 +600,12 @@ void iterative_hard_threshold_t::parse_config_line(string & token,istringstream 
     iss>>config->bin_geno_file;
   }else if (token.compare("BIM_FILE")==0){
     iss>>config->bim_file;
+  }else if (token.compare("CROSS_VALIDATE")==0){
+    iss>>config->cross_validate;
+  }else if (token.compare("SLICE_FILE")==0){
+    iss>>config->slice_file;
+  }else if (token.compare("BEST_K")==0){
+    iss>>config->best_k;
   }else if (token.compare("TOP_K_MIN")==0){
     iss>>config->top_k_min;
   }else if (token.compare("TOP_K_MAX")==0){
@@ -695,6 +716,10 @@ void iterative_hard_threshold_t::read_dataset(){
   this->y = new float[observations];
   this->residuals = new float[observations];
   parse_fam_file(famfile,full_subject_mask,observations,this->y);
+  this->mask_n = new int[observations];
+  if(config->cross_validate){
+    load_into_matrix(config->slice_file.data(),mask_n,observations,1);
+  }
   //load_matrix_data(config->traitfile.data(),y,observations,1,sub_observations,1,subject_mask, single_mask,true,0);
   //load_random_access_data(random_access_pheno,y,1,observations,sub_observations,1,subject_mask, single_mask);
   this->means = new float[variables];
@@ -823,6 +848,7 @@ void iterative_hard_threshold_t::init_gpu(){
   ocl_wrapper->create_buffer<float>("xvec_full",CL_MEM_READ_WRITE,observations);
   ocl_wrapper->create_buffer<float>("Xt_vec_chunks",CL_MEM_READ_WRITE,variables * subject_chunks);
   ocl_wrapper->create_buffer<float>("Xt_vec",CL_MEM_READ_WRITE,variables);
+  ocl_wrapper->create_buffer<int>("mask_n",CL_MEM_READ_ONLY,observations);
   ocl_wrapper->create_buffer<int>("mask_p",CL_MEM_READ_ONLY,variables);
   ocl_wrapper->create_buffer<float>("scaler",CL_MEM_READ_ONLY,1);
   // initialize buffers
@@ -830,6 +856,7 @@ void iterative_hard_threshold_t::init_gpu(){
   ocl_wrapper->write_to_buffer("packedgeno_subjectmajor",observations*packedstride_subjectmajor,packedgeno_subjectmajor);
   ocl_wrapper->write_to_buffer("means",variables,means);
   ocl_wrapper->write_to_buffer("precisions",variables,precisions);
+  ocl_wrapper->write_to_buffer("mask_n",observations,mask_n);
   ocl_wrapper->write_to_buffer("mask_p",variables,mask_p);
   // add Kernel arguments
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",observations);
@@ -841,6 +868,7 @@ void iterative_hard_threshold_t::init_gpu(){
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("vec_p")));
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("means")));
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("precisions")));
+  ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("mask_n")));
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",*(ocl_wrapper->get_buffer("mask_p")));
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
   ocl_wrapper->add_kernel_arg("compute_x_times_vector",cl::__local(sizeof(float) * BLOCK_WIDTH));
@@ -859,6 +887,7 @@ void iterative_hard_threshold_t::init_gpu(){
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("invec")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("means")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("precisions")));
+  ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("mask_n")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",*(ocl_wrapper->get_buffer("mask_p")));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",cl::__local(sizeof(packedgeno_t) * SMALL_BLOCK_WIDTH));
   ocl_wrapper->add_kernel_arg("compute_xt_times_vector",cl::__local(sizeof(float) * BLOCK_WIDTH));
@@ -965,11 +994,22 @@ void iterative_hard_threshold_t::allocate_memory(){
   }
 
   this->map_distance = 0;
-  this->current_top_k = config->top_k_max;
+  this->current_top_k = config->cross_validate?config->top_k_max:config->best_k;
   this->last_BIC = 1e10;
+  // do some initializations
+  for(int i=0;i<observations;++i) {
+    Xbeta_full[i] = 0;
+    if(config->cross_validate){
+      //cerr<<"at "<<i<<" was "<<mask_n[i]<<endl;
+      mask_n[i] = !mask_n[i];
+      //cerr<<"at "<<i<<" now "<<mask_n[i]<<endl;
+    }else{
+      mask_n[i] = 1;
+    }
+  }
   proxmap_t::allocate_memory();
   if(mpi_rank==0){
-    random_access_geno = new random_access_t(config->bin_geno_file.data(),variables,observations);
+   // random_access_geno = new random_access_t(config->bin_geno_file.data(),variables,observations);
   }
   if(this->run_gpu && slave_id>=0){
 #ifdef USE_GPU
@@ -977,9 +1017,6 @@ void iterative_hard_threshold_t::allocate_memory(){
 #endif
   }
   compute_xt_times_vector(y,XtY);
-  //if(mpi_rank==0)cerr<<"Initialized XtY!\n";
-  run_landweber = true;
-  //MPI_Finalize();exit(1);
 #endif
 }
 
@@ -996,7 +1033,7 @@ iterative_hard_threshold_t::~iterative_hard_threshold_t(){
     if(this->run_gpu) delete ocl_wrapper;
 #endif
   }else{
-    delete random_access_geno;
+//    delete random_access_geno;
   }
 
   delete[]A3x;
@@ -1112,52 +1149,13 @@ float iterative_hard_threshold_t::compute_marginal_beta(float * xvec){
 }
 
 void iterative_hard_threshold_t::initialize(){
-  if (mpi_rank==0){
-    if(config->verbose) cerr<<"Mu iterate: "<<iter_mu<<" mu="<<mu<<" of "<<config->mu_max<<endl;
-  }
-  if(this->iter_rho_epsilon==-10){
-    if(mu==0){
-      //this->rho = config->rho_min;
-      //for(int j=0;j<this->variables;++j) beta[j]=0;
-      //update_beta_landweber();
-      float temp_norm = 0;
-      if(slave_id>=0){
-        for(int j=0;j<this->variables;++j){
-          float genovec[observations];
-          for(int i=0;i<observations;++i){
-            genovec[i] =  plink_data_X_subset->get_geno(j,i);
-            //cerr<<"Geno is "<<genovec[i]<<endl;
-            temp_norm+=genovec[i]*genovec[i];
-          }
-          //beta[j] = 0;
-          beta[j] = compute_marginal_beta(genovec);
-          //if(slave_id==0 && j<30) cerr<<"Beta MLE at "<<j<<": "<<beta[j]<<endl;
-        }
-      }
-      MPI_Reduce(&temp_norm,&frobenius_norm,1,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
-      
-      if(mpi_rank==0){
-        frobenius_norm=sqrt(frobenius_norm);
-        cerr<<"Frobenius norm: "<<frobenius_norm<<", spectral norm: "<<config->spectral_norm<<endl;
-        this->rho = this->spectral_norm;
-        //this->rho = this->frobenius_norm;
-      }
-      MPI_Bcast(&this->rho,1,MPI_FLOAT,0,MPI_COMM_WORLD);
-      MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
-      for(int j=0;j<this->variables;++j) last_beta[j] = beta[j]; 
-    }
-    //update_constrained_beta();
-    //update_map_distance();
-    //evaluate_obj();
-    //MPI_Finalize();
-    //exit(0);
-  }
+  //cerr<<"Calling initialize!\n";
 }
 
 bool iterative_hard_threshold_t::finalize_inner_iteration(){
   if(mpi_rank==0){
     //cerr<<"In finalize iteration\n";
-    float diff_norm = 0;
+    //float diff_norm = 0;
     for(int j=0;j<variables;++j){
       if(constrained_beta[j]!=0){
         last_beta[j] = beta[j];
@@ -1171,10 +1169,28 @@ bool iterative_hard_threshold_t::finalize_iteration(){
   int proceed = false; 
 #ifdef USE_MPI
   // compute current BIC
-  update_Xbeta(active_indices);
+  float validation_mse = 0;
+  if(config->cross_validate){
+    int validation_mask[observations];
+    for(int i=0;i<observations;++i){
+      validation_mask[i] = !mask_n[i];
+    }
+    for(int i=0;i<observations;++i) Xbeta_old[i] = Xbeta_full[i];
+    update_Xbeta(validation_mask,active_indices);
+    float residual = 0;
+    int n=0;
+    for(int i=0;i<observations;++i){
+      if(validation_mask[i]){
+        float dev = (y[i]-Xbeta_full[i]);
+        residual+=dev*dev;
+        ++n;
+      }
+    }
+    validation_mse=residual/n;
+    for(int i=0;i<observations;++i) Xbeta_full[i] = Xbeta_old[i];
+  }
   
   if(mpi_rank==0){
-    //cerr<<"In finalize iteration\n";
     float diff_norm = 0;
     for(int j=0;j<variables;++j){
       if(constrained_beta[j]!=0){
@@ -1182,27 +1198,18 @@ bool iterative_hard_threshold_t::finalize_iteration(){
         if (dev>diff_norm) diff_norm = dev;
         //diff_norm+=dev*dev;
       }
-      //last_beta[j] = beta[j];
     }
-    //diff_norm = sqrt(diff_norm);
     bool top_k_finalized = false;
     bool abort = false;
     cerr<<"FINALIZE_ITERATION: feasible "<<in_feasible_region()<<" diff_norm "<<diff_norm<<".\n";
     if(rho > config->rho_max || (this->last_mapdist>0 && this->map_distance> last_mapdist)){ 
       cerr<<"FINALIZE_ITERATION: Warning: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
-      //top_k_finalized = true;
     }
-    float temp_residual = 0;
-    for(int i=0;i<observations;++i){
-      float dev=(y[i]-Xbeta_full[i]);
-      //if(i<10) cerr<<"RESIDUAL: "<<residuals[i]<<"\t"<<Xbeta_full[i]<<"\t"<<y[i]<<endl;
-      temp_residual+=dev*dev;
-    }
-    current_BIC = log(observations) * this->current_top_k + observations * log(temp_residual/observations);
+    current_BIC = log(observations) * this->current_top_k + observations * log(residual/observations);
+    // now do the validation part of the cross validation
     if(current_BIC > last_BIC){
       cerr<<"FINALIZE_ITERATION: Warning: BIC grew from "<<last_BIC<<" to "<<current_BIC<<".\n";
       //top_k_finalized = true;
-      //abort = true;
     }
     if (diff_norm>config->beta_epsilon){
       cerr<<"FINALIZE_ITERATION: Not converged. Beta norm difference is "<<diff_norm<<" threshold: "<<config->beta_epsilon<<endl;
@@ -1215,22 +1222,28 @@ bool iterative_hard_threshold_t::finalize_iteration(){
       }
     }
     if (top_k_finalized){
-      int p = variables;
-      ostringstream oss;
-      oss<<"betas.k."<<current_top_k<<".txt";
-      string filename=oss.str();
-      cerr<<"FINALIZE_ITERATION: Dumping parameter contents into "<<filename<<"\n";
-      ofstream ofs(filename.data());
-      ofs<<"BIC\t"<<current_BIC<<endl;
-      ofs<<"INDEX\tBETA\n";
-      for(int j=0;j<p;++j){
-        if(constrained_beta[j]!=0){
-          ofs<<j<<"\t"<<beta[j]<<"\n";
+      //ostringstream oss;
+      if(config->cross_validate){
+        cout<<"SLICE "<<config->slice_file<<"\tK "<<current_top_k<<"\tVALIDATION_MSE "<<validation_mse<<endl;
+        --this->current_top_k;
+      }else{
+        int p = variables;
+        //oss<<"betas.k."<<current_top_k<<".txt";
+        //string filename=oss.str();
+        //cerr<<"FINALIZE_ITERATION: Dumping parameter contents into "<<filename<<"\n";
+        cerr<<"FINALIZE_ITERATION: Dumping parameter contents.\n";
+        //ofstream ofs(filename.data());
+        cout<<"BIC\t"<<current_BIC<<endl;
+        cout<<"INDEX\tBETA\n";
+        for(int j=0;j<p;++j){
+          if(constrained_beta[j]!=0){
+            cout<<j<<"\t"<<beta[j]<<"\n";
+          }
         }
+        //ofs.close();
+        abort = true;
       }
-      ofs.close();
       last_BIC = current_BIC;
-      --this->current_top_k;
     }
     proceed = (!abort) && (!top_k_finalized || this->current_top_k >= config->top_k_min);
   }
@@ -1241,10 +1254,17 @@ bool iterative_hard_threshold_t::finalize_iteration(){
   
 
 void iterative_hard_threshold_t::iterate(){
-  run_landweber = total_iterations?false:true;
-  if(run_landweber){
-    update_beta_landweber();
+  if(!total_iterations){
+    //update_beta_landweber();
+    if (slave_id>=0){
+      float learning_rate = 2./(this->spectral_norm*this->spectral_norm);
+      for(int j=0;j<variables;++j){ 
+        beta[j] = learning_rate*XtY[j];
+      }
+    }
+    MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
     update_constrained_beta();
+    update_Xbeta(mask_n,active_indices);
   }else{
     update_beta_iterative_hard_threshold();
   }
@@ -1286,14 +1306,17 @@ float iterative_hard_threshold_t::evaluate_obj(){
 #ifdef USE_MPI
   //if(in_feasible_region())update_Xbeta(active_indices);
   //else update_Xbeta();
-  update_Xbeta();
+  //update_Xbeta();
   //if (mpi_rank==0){
     last_residual = residual;
     residual = 0;
     for(int i=0;i<observations;++i){
-      residuals[i]=(y[i]-Xbeta_full[i]);
+      residuals[i] = 0;
+      if(mask_n[i]){
+        residuals[i]=(y[i]-Xbeta_full[i]);
       //if(i<10) cerr<<"RESIDUAL: "<<residuals[i]<<"\t"<<Xbeta_full[i]<<"\t"<<y[i]<<endl;
-      residual+=residuals[i]*residuals[i];
+        residual+=residuals[i]*residuals[i];
+      }
     }
     //if(config->verbose)cerr<<"Gradient weight: "<<gradient_weight<<" and rho is "<<rho<<endl;
     //float proxdist = get_prox_dist_penalty(); 
@@ -1305,7 +1328,6 @@ float iterative_hard_threshold_t::evaluate_obj(){
   //MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   //MPI_Bcast(&residual,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   //MPI_Bcast(residuals,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
-  compute_xt_times_vector(residuals, negative_gradient);
 #endif
   return obj;
 }

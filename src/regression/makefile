@@ -45,4 +45,4 @@ param_split.o: param_split.cpp param_split.hpp
 param_split_with_theta.o: param_split_with_theta.cpp param_split_with_theta.hpp
 	$(CC) $(CFLAGS) $(PREPROC) -o param_split_with_theta.o -c $<
 clean :
-	rm -f *.o
+	rm -f *.o $(L0)

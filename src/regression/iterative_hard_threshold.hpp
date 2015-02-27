@@ -106,7 +106,7 @@ private:
   int * inactive_indices;
 
   // IO variables
-  random_access_t * random_access_geno;
+  //random_access_t * random_access_geno;
   plink_data_t * plink_data_X_subset;
   packedgeno_t * packedgeno_snpmajor;
   int packedstride_snpmajor;
@@ -127,10 +127,12 @@ private:
   void parse_fam_file(const char * infile, bool * mask,int len,float * y);
   void parse_bim_file(const char * infile, bool * mask,int len,float * mean, float * sd);
   // in is p, out is n
-  void compute_x_times_vector(float * in_vec,int * mask,float * out_vec,bool debug); 
+  void update_Xbeta();
+  void update_Xbeta(int * mask_n,int * mask_p);
+  void compute_x_times_vector(float * in_vec,int * mask_n,int * mask_p,float * out_vec,bool debug); 
   // in is n, out is p
   void compute_xt_times_vector(float * in_vec,float * out_vec);
-  void compute_xt_times_vector(float * in_vec,int * mask,float * out_vec, float  scaler);
+  void compute_xt_times_vector(float * in_vec,int * mask_n, int * mask_p,float * out_vec, float  scaler);
 
   void update_constrained_beta();
   void iterate();
@@ -146,8 +148,6 @@ private:
   float infer_rho();
   float infer_epsilon();
   
-  void update_Xbeta();
-  void update_Xbeta(int * mask);
   void update_beta_iterative_hard_threshold();
   void update_beta_landweber();
   void update_beta_CG();

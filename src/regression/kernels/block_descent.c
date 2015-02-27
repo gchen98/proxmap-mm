@@ -8,6 +8,7 @@ __global float * xvec_chunks,
 __global const float * vec_p,
 __global const float * means,
 __global const float * precisions,
+__global int * mask_n,
 __global int * mask_p,
 __local packedgeno_t * local_packedgeno,
 __local float * local_floatgeno
@@ -15,6 +16,7 @@ __local float * local_floatgeno
   MAPPING
   int snp_chunk = get_group_id(0);
   int subject = get_group_id(1);
+  if(mask_n[subject]==0) return;
   int threadindex = get_local_id(0);
   local_floatgeno[threadindex] = 0;
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -80,6 +82,7 @@ __global float * Xt_vec_chunks,
 __global const float * vec,
 __global const float * means,
 __global const float * precisions,
+__global int * mask_n,
 __global int * mask_p,
 __local packedgeno_t * local_packedgeno,
 __local float * local_floatgeno
@@ -98,7 +101,7 @@ __local float * local_floatgeno
     // LOAD ALL THE COMPRESSED GENOTYPES INTO LOCAL MEMORY
     if (threadindex<SMALL_BLOCK_WIDTH) convertgeno(snp,threadindex,subject_chunk,packedstride_snpmajor,packedgeno_snpmajor,local_packedgeno,local_floatgeno,mapping);
     barrier(CLK_LOCAL_MEM_FENCE);
-    local_floatgeno[threadindex]= local_floatgeno[threadindex]==9?0:(local_floatgeno[threadindex]-mean)*precision*vec[subject_index];
+    local_floatgeno[threadindex]= (local_floatgeno[threadindex]==9 || mask_n[subject_index]==0)?0:(local_floatgeno[threadindex]-mean)*precision*vec[subject_index];
     barrier(CLK_LOCAL_MEM_FENCE);
     // REDUCE 
     for(unsigned int s=BLOCK_WIDTH/2; s>0; s>>=1) {
