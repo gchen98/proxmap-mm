@@ -619,9 +619,9 @@ void proxmap_t::run(){
               cerr<<"Bypassing downhill check! (last: "<<last_obj<<" current: "<<obj<<endl;
             }
           //}else if(last_obj<=obj){
-          }else if(fabs(last_obj-obj)/last_obj<config->obj_epsilon){
+          }else if(fabs(last_obj-obj)/fabs(last_obj)<config->obj_epsilon){
             converged=true; 
-            if (verbose)cerr<<"Converged!\n";
+            if (verbose)cerr<<"Converged! last: "<<last_obj<<" current "<<obj<<"\n";
           }else{
             if (verbose){
               cerr<<"Proceeding to next iteration! (last: "<<last_obj<<" current: "<<obj<<")"<<endl;

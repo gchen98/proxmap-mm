@@ -420,6 +420,8 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
+    bool benchmark = false;
+    double start = clock();
     //cerr<<"At compute_xt_times_vec 2 with "<<variables<<" variables.\n";
     //bool debug_gpu = slave_id==0; 
     bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
@@ -509,6 +511,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
       } // loop over variables
       if(debug_gpu) cerr<<endl;
     } // if run cpu
+    if(benchmark) cerr<<"Time for xt vector: "<<(clock()-start)/CLOCKS_PER_SEC<<endl;
   } // if is slave
   MPI_Gatherv(out_vec,variables,MPI_FLOAT,out_vec,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
 }
@@ -757,6 +760,7 @@ void iterative_hard_threshold_t::parse_fam_file(const char * infile, bool * mask
     exit(1);
   }
   int j = 0;
+  bool decimal_found = false;
   for(int i=0;i<observations;++i){
     string line;
     getline(ifs,line);
@@ -765,12 +769,15 @@ void iterative_hard_threshold_t::parse_fam_file(const char * infile, bool * mask
     for(int k=0;k<6;++k) iss>>token;
     float outcome;
     iss>>outcome;
+    if(outcome>0.0001 && outcome<.9999 || outcome<-0.0001 && outcome>-.9999)
+      decimal_found = true;
     if(mask[i]){
       newy[j] = outcome;
       ++j;
     }
-    
   }
+  this->logistic = !decimal_found;
+  //cerr<<"Logistic status: "<<this->logistic<<endl;
   ifs.close();
   
   
@@ -942,6 +949,10 @@ void iterative_hard_threshold_t::allocate_memory(){
   read_dataset();
 
   // ALLOCATE MEMORY FOR ESTIMATED PARAMETERS
+  this->residual_weights = new float[observations];
+  for(int i=0;i<observations;++i){
+    residual_weights[i] = 1;
+  }
   last_active_indices = new int[variables];
   active_indices = new int[variables];
   inactive_indices = new int[variables];
@@ -994,7 +1005,10 @@ void iterative_hard_threshold_t::allocate_memory(){
   }
 
   this->map_distance = 0;
-  this->current_top_k = config->cross_validate?config->top_k_max:config->best_k;
+  this->current_top_k = config->best_k;
+  if(config->cross_validate){
+    current_top_k = logistic?config->top_k_min:config->top_k_max;
+  }
   this->last_BIC = 1e10;
   // do some initializations
   for(int i=0;i<observations;++i) {
@@ -1035,7 +1049,7 @@ iterative_hard_threshold_t::~iterative_hard_threshold_t(){
   }else{
 //    delete random_access_geno;
   }
-
+  delete[]residual_weights;
   delete[]A3x;
   delete[] negative_gradient;
   delete[]cg_residuals;
@@ -1075,6 +1089,7 @@ iterative_hard_threshold_t::~iterative_hard_threshold_t(){
   }
 #endif
 }
+
 
 float iterative_hard_threshold_t::infer_epsilon(){
   float new_epsilon=last_epsilon;
@@ -1149,19 +1164,9 @@ float iterative_hard_threshold_t::compute_marginal_beta(float * xvec){
 }
 
 void iterative_hard_threshold_t::initialize(){
-  //cerr<<"Calling initialize!\n";
 }
 
 bool iterative_hard_threshold_t::finalize_inner_iteration(){
-  if(mpi_rank==0){
-    //cerr<<"In finalize iteration\n";
-    //float diff_norm = 0;
-    for(int j=0;j<variables;++j){
-      if(constrained_beta[j]!=0){
-        last_beta[j] = beta[j];
-      }
-    }
-  }
   return true;
 }
 
@@ -1175,18 +1180,27 @@ bool iterative_hard_threshold_t::finalize_iteration(){
     for(int i=0;i<observations;++i){
       validation_mask[i] = !mask_n[i];
     }
-    for(int i=0;i<observations;++i) Xbeta_old[i] = Xbeta_full[i];
+    for(int i=0;i<observations;++i) {
+      Xbeta_old[i] = Xbeta_full[i];
+    }
     update_Xbeta(validation_mask,active_indices);
     float residual = 0;
     int n=0;
     for(int i=0;i<observations;++i){
       if(validation_mask[i]){
-        float dev = (y[i]-Xbeta_full[i]);
+        float dev = 0;
+        if(logistic){
+          float expvalue = 1./(1.+exp(-1.*Xbeta_full[i]));
+          dev = (y[i]) == (expvalue>=.5);
+          //cerr<<i<<": "<<expvalue<<","<<(y[i])<<endl;
+        }else{
+          dev = (y[i]-Xbeta_full[i]);
+        }
         residual+=dev*dev;
         ++n;
       }
     }
-    validation_mse=residual/n;
+    validation_mse=logistic?1.-(residual/n):residual/n;
     for(int i=0;i<observations;++i) Xbeta_full[i] = Xbeta_old[i];
   }
   
@@ -1225,7 +1239,8 @@ bool iterative_hard_threshold_t::finalize_iteration(){
       //ostringstream oss;
       if(config->cross_validate){
         cout<<"SLICE "<<config->slice_file<<"\tK "<<current_top_k<<"\tVALIDATION_MSE "<<validation_mse<<endl;
-        --this->current_top_k;
+        if(logistic) ++this->current_top_k;
+        else --this->current_top_k;
       }else{
         int p = variables;
         //oss<<"betas.k."<<current_top_k<<".txt";
@@ -1245,7 +1260,7 @@ bool iterative_hard_threshold_t::finalize_iteration(){
       }
       last_BIC = current_BIC;
     }
-    proceed = (!abort) && (!top_k_finalized || this->current_top_k >= config->top_k_min);
+    proceed = (!abort) && (!top_k_finalized || (this->current_top_k >= config->top_k_min && this->current_top_k <= config->top_k_max));
   }
   MPI_Bcast(&proceed,1,MPI_INT,0,MPI_COMM_WORLD);
 #endif
@@ -1254,7 +1269,18 @@ bool iterative_hard_threshold_t::finalize_iteration(){
   
 
 void iterative_hard_threshold_t::iterate(){
+  if(mpi_rank==0){
+    //cerr<<"In initialize inner iteration\n";
+    //float diff_norm = 0;
+    for(int j=0;j<variables;++j){
+      if(constrained_beta[j]!=0){
+        last_beta[j] = beta[j];
+      }
+    }
+  }
   if(!total_iterations){
+  //if(logistic && !iter_rho_epsilon || !total_iterations){
+    cerr<<"Calling initialize!\n";
     //update_beta_landweber();
     if (slave_id>=0){
       float learning_rate = 2./(this->spectral_norm*this->spectral_norm);
@@ -1301,26 +1327,40 @@ bool iterative_hard_threshold_t::proceed_qn_commit(){
   return proceed;
 }
 
+void iterative_hard_threshold_t::update_residual_weights(int * mask_n){
+  for(int i=0;i<observations;++i){
+    if(mask_n[i]){
+      residual_weights[i] = Xbeta_full[i]==0 ? .25 : (0.5*tanh(0.5*Xbeta_full[i])/Xbeta_full[i]);
+    }
+  }
+}
+
 float iterative_hard_threshold_t::evaluate_obj(){
   float obj=0;
 #ifdef USE_MPI
   //if(in_feasible_region())update_Xbeta(active_indices);
   //else update_Xbeta();
   //update_Xbeta();
+  if(logistic) update_residual_weights(mask_n);
   //if (mpi_rank==0){
     last_residual = residual;
     residual = 0;
     for(int i=0;i<observations;++i){
       residuals[i] = 0;
       if(mask_n[i]){
-        residuals[i]=(y[i]-Xbeta_full[i]);
-      //if(i<10) cerr<<"RESIDUAL: "<<residuals[i]<<"\t"<<Xbeta_full[i]<<"\t"<<y[i]<<endl;
-        residual+=residuals[i]*residuals[i];
+        if(logistic){
+          residuals[i] = y[i] - 0.5 - residual_weights[i] * Xbeta_full[i];
+          residual+= (y[i] - 0.5) * Xbeta_full[i] 
+                      - log(cosh(0.5 * Xbeta_full[i]));
+        }else{
+          residuals[i]=(y[i]-Xbeta_full[i]);
+          residual+=residuals[i]*residuals[i];
+        }
       }
     }
     //if(config->verbose)cerr<<"Gradient weight: "<<gradient_weight<<" and rho is "<<rho<<endl;
     //float proxdist = get_prox_dist_penalty(); 
-    obj = .5*residual;
+    obj = logistic?-1.*residual : .5*residual;
     //obj = loss + rho * this->map_distance;
     if(mpi_rank==0)cerr<<"EVALUATE_OBJ at iter "<<total_iterations<<": "<<obj<<endl;
   //}

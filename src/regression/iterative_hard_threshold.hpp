@@ -56,7 +56,7 @@ private:
   int observations; // is all subjects for all nodes
   int variables; // is all snps for master, and subset for slaves
   int all_variables; // is all snps for all nodes
-  
+  bool logistic;
 
   float * XtY;
   float * XtXbeta;
@@ -104,6 +104,7 @@ private:
   int * last_active_indices;
   int * active_indices;
   int * inactive_indices;
+  float * residual_weights;
 
   // IO variables
   //random_access_t * random_access_geno;
@@ -147,6 +148,7 @@ private:
   void init_gpu();
   float infer_rho();
   float infer_epsilon();
+  void update_residual_weights(int * mask_n);
   
   void update_beta_iterative_hard_threshold();
   void update_beta_landweber();
