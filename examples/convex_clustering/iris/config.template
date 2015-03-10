@@ -7,8 +7,9 @@ DEVICE_ID	0
 KERNELS /home/garyc/development/proxmap-mm/trunk/src/convex_clustering/kernels/
 
 
-DATAPOINTS	150
-VARIABLES	4
-WEIGHTS weights.ph4.k5
-GENOTYPES	iris.txt
-OUTPUT_PATH	iris_clusters
+DATAPOINTS	SUBJECTS
+VARIABLES	DIMENSION
+WEIGHTS WEIGHTFILE
+GENOTYPES	DATAFILE
+OUTPUT_PATH	OUT_PATH
+

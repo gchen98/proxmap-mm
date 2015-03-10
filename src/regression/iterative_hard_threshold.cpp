@@ -1005,9 +1005,12 @@ void iterative_hard_threshold_t::allocate_memory(){
   }
 
   this->map_distance = 0;
-  this->current_top_k = config->best_k;
   if(config->cross_validate){
-    current_top_k = logistic?config->top_k_min:config->top_k_max;
+  }
+  if(logistic){
+    current_top_k = config->top_k_min;
+  }else{
+    current_top_k = config->cross_validate?config->top_k_max:config->best_k;
   }
   this->last_BIC = 1e10;
   // do some initializations
@@ -1215,7 +1218,7 @@ bool iterative_hard_threshold_t::finalize_iteration(){
     }
     bool top_k_finalized = false;
     bool abort = false;
-    cerr<<"FINALIZE_ITERATION: feasible "<<in_feasible_region()<<" diff_norm "<<diff_norm<<".\n";
+    cerr<<"FINALIZE_ITERATION: feasible "<<in_feasible_region()<<" diff_norm "<<diff_norm<<" K "<<current_top_k<<".\n";
     if(rho > config->rho_max || (this->last_mapdist>0 && this->map_distance> last_mapdist)){ 
       cerr<<"FINALIZE_ITERATION: Warning: Failed to meet constraint. Last distance: "<<last_mapdist<<" current: "<<map_distance<<".\n";
     }
@@ -1242,21 +1245,19 @@ bool iterative_hard_threshold_t::finalize_iteration(){
         if(logistic) ++this->current_top_k;
         else --this->current_top_k;
       }else{
-        int p = variables;
-        //oss<<"betas.k."<<current_top_k<<".txt";
-        //string filename=oss.str();
-        //cerr<<"FINALIZE_ITERATION: Dumping parameter contents into "<<filename<<"\n";
-        cerr<<"FINALIZE_ITERATION: Dumping parameter contents.\n";
-        //ofstream ofs(filename.data());
-        cout<<"BIC\t"<<current_BIC<<endl;
-        cout<<"INDEX\tBETA\n";
-        for(int j=0;j<p;++j){
-          if(constrained_beta[j]!=0){
-            cout<<j<<"\t"<<beta[j]<<"\n";
+        if(!logistic || this->current_top_k==config->top_k_max) {
+          cerr<<"FINALIZE_ITERATION: Dumping parameter contents.\n";
+          cout<<"BIC\t"<<current_BIC<<endl;
+          cout<<"INDEX\tBETA\n";
+          for(int j=0;j<variables;++j){
+            if(constrained_beta[j]!=0){
+              cout<<j<<"\t"<<beta[j]<<"\n";
+            }
           }
+          abort = true;
+        }else{
+          ++this->current_top_k;
         }
-        //ofs.close();
-        abort = true;
       }
       last_BIC = current_BIC;
     }

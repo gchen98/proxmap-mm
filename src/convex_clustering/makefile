@@ -2,13 +2,21 @@ use_gpu=0
 
 include ../common.mk
 
-OBJS=proxmap.o cluster.o cluster_opencl.o main.o
+STATIC_DIR=../../examples/convex_clustering
+DYNAMIC_DIR=../../bin
+#ARCHIVES=/home/garyc/Downloads/gsl-1.16/.libs/libgsl.a /home/garyc/Downloads/gsl-1.16/cblas/.libs/libgslcblas.a 
+ARCHIVES=/usr/lib64/libgsl.a /usr/lib64/libgslcblas.a /home/garykche/cuda_sdk/OpenCL/common/lib/liboclUtil_x86_64.a /home/garykche/shared_objects/libocl_wrapper.a
+OBJS=cl_templates.o proxmap.o proxmap_opencl.o cluster.o cluster_opencl.o main.o
 BINDIR=../../bin
 
-CONVEXCLUSTER=$(BINDIR)/convexcluster
 
 compile: $(OBJS)
-	$(LINKER) -o $(CONVEXCLUSTER) $(LINKFLAGS) $(OBJS)
+	$(LINKER)  -o $(BINDIR)/convexcluster $(LINKFLAGS) $(OBJS)
+
+static: $(OBJS)
+	$(LINKER)  -static -o $(STATIC_DIR)/convexcluster $(OBJS) $(ARCHIVES)
+	$(LINKER)  -static -o $(STATIC_DIR)/knn_weights knn_weights.cpp
+	$(LINKER)  -static -o $(STATIC_DIR)/distance distance.cpp
 
 
 proxmap.o: ../proxmap.cpp ../proxmap.hpp
