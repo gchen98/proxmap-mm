@@ -1245,15 +1245,19 @@ bool iterative_hard_threshold_t::finalize_iteration(){
         if(logistic) ++this->current_top_k;
         else --this->current_top_k;
       }else{
-        if(!logistic || this->current_top_k==config->top_k_max) {
-          cerr<<"FINALIZE_ITERATION: Dumping parameter contents.\n";
-          cout<<"BIC\t"<<current_BIC<<endl;
-          cout<<"INDEX\tBETA\n";
-          for(int j=0;j<variables;++j){
-            if(constrained_beta[j]!=0){
-              cout<<j<<"\t"<<beta[j]<<"\n";
-            }
+        ostringstream oss;
+        oss<<"beta.k."<<current_top_k<<".txt";
+        cerr<<"FINALIZE_ITERATION: Dumping parameter contents.\n";
+        ofstream ofs(oss.str().data());
+        ofs<<"BIC\t"<<current_BIC<<endl;
+        ofs<<"INDEX\tBETA\n";
+        for(int j=0;j<variables;++j){
+          if(constrained_beta[j]!=0){
+            ofs<<j<<"\t"<<beta[j]<<"\n";
           }
+        }
+        ofs.close();
+        if(!logistic || this->current_top_k==config->top_k_max) {
           abort = true;
         }else{
           ++this->current_top_k;
