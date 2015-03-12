@@ -58,6 +58,12 @@ private:
   int all_variables; // is all snps for all nodes
   bool logistic;
 
+  int train_n;
+  int validation_n;
+  float * X_active_train;
+  float * Xt_active_train;
+  float * X_active_validate;
+  float * Xt_active_validate;
   float * XtY;
   float * XtXbeta;
   float * y; // dimension dependent variable for outcome
@@ -159,7 +165,9 @@ private:
   void store_qn_current_param(float * params);
   bool proceed_qn_commit();
   float compute_marginal_beta(float * xvec);
+  void update_X_matrices();
   bool run_landweber;
+  void compute_X_active_train_vector(float * vector_p,float * vector_n);
 
 };
 

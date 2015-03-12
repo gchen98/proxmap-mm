@@ -55,7 +55,8 @@ void iterative_hard_threshold_t::update_Xbeta(){
 
 void iterative_hard_threshold_t::update_Xbeta(int * mask_n,int * mask_p){
 #ifdef USE_MPI
-  compute_x_times_vector(beta,mask_n,mask_p,Xbeta_full, false);
+  //compute_x_times_vector(beta,mask_n,mask_p,Xbeta_full, false);
+  compute_X_active_train_vector(beta,Xbeta_full);
 #endif
 }
 
@@ -68,7 +69,7 @@ void iterative_hard_threshold_t::compute_x_times_vector(float * invec,int * mask
   bool debug_gpu = (run_gpu && run_cpu && slave_id==0);
   float temp_vec[observations];
   if(slave_id>=0){
-    bool benchmark = false;
+    bool benchmark = true;
     double start = clock();
     if(run_gpu){
   #ifdef USE_GPU
@@ -151,6 +152,28 @@ void iterative_hard_threshold_t::compute_x_times_vector(float * invec,int * mask
 }
 
 
+void iterative_hard_threshold_t::compute_X_active_train_vector(float * vector_p,float * vector_n){
+#ifdef USE_MPI
+  float temp_out[observations];
+  for(int i=0;i<observations;++i) temp_out[i] = 0;
+  if(total_active && slave_id>=0){
+     float temp_p[total_active];
+     float temp_n[train_n];
+     int cur_var=0;
+     for(int j=0;j<variables;++j){
+       if(active_indices[j]) temp_p[cur_var++]=vector_p[j];
+     }
+     mmultiply(X_active_train,train_n,total_active,temp_p,1,temp_n);
+     int cur_obs = 0;
+     for(int i=0;i<observations;++i){
+       if(mask_n[i]) temp_out[i] = temp_n[cur_obs++];
+     }
+  }
+  MPI_Reduce(temp_out,vector_n,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
+  MPI_Bcast(vector_n,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
+#endif
+}
+
 void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
 #ifdef USE_MPI
   //bool debug = false;
@@ -163,8 +186,9 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
   }
   // Initialize X times negative gradient
   float Xd[observations];
-  compute_xt_times_vector(residuals, negative_gradient);
-  compute_x_times_vector(negative_gradient,mask_n,active_indices,Xd,false);
+  compute_X_active_train_vector(negative_gradient,Xd);
+  //compute_x_times_vector(negative_gradient,mask_n,active_indices,Xd,false);
+
   // compute the learning rate mu
   float mu = 0;
   int backtrack_iter = 0;
@@ -406,6 +430,41 @@ void iterative_hard_threshold_t::update_beta_CG(){
 #endif
 }
 
+void iterative_hard_threshold_t::update_X_matrices(){
+  cerr<<"validation_n "<<validation_n<<" train_n "<<train_n<<" total_active "<<total_active<<endl;
+  if(!total_active) return;
+  if(validation_n) {
+    delete[] X_active_validate;
+    delete[] Xt_active_validate;
+    X_active_validate = new float[validation_n*total_active];
+    Xt_active_validate = new float[total_active*validation_n];
+  }
+  delete[] X_active_train;
+  delete[] Xt_active_train;
+  X_active_train = new float[train_n*total_active];
+  Xt_active_train = new float[total_active*train_n];
+  int cur_var = 0;
+  for(int j=0;j<variables;++j){
+    if(active_indices[j]){
+      int cur_train = 0;
+      int cur_validate = 0;
+      for(int i=0;i<observations;++i){
+        float geno = plink_data_X_subset->get_geno(j,i);
+        //cerr<<"Geno at j "<<j<<" i "<<i<<" is "<<geno<<" mask "<<mask_n[i]<<endl;
+        if(mask_n[i]){ // training subset
+          X_active_train[cur_train*total_active+cur_var] = geno;
+          Xt_active_train[cur_var*train_n+cur_train] = geno;
+          ++cur_train;
+        }else{
+          X_active_validate[cur_validate*total_active+cur_var] = geno;
+          Xt_active_validate[cur_var*validation_n+cur_validate] = geno;
+          ++cur_validate;
+        }
+      }
+      ++cur_var;
+    }
+  }
+}
 
 void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, float * out_vec){
   //cerr<<"At compute_xt_times_vec 1\n";
@@ -420,7 +479,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
-    bool benchmark = false;
+    bool benchmark = true;
     double start = clock();
     //cerr<<"At compute_xt_times_vec 2 with "<<variables<<" variables.\n";
     //bool debug_gpu = slave_id==0; 
@@ -568,19 +627,18 @@ void iterative_hard_threshold_t::update_constrained_beta(){
     beta[j] = constrained_beta[j];
   }
   MPI_Scatterv(beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,beta,variables,MPI_FLOAT,0,MPI_COMM_WORLD);
+  int active_changed = false;
   for(int j=0;j<variables;++j){
     last_active_indices[j] = active_indices[j];
     active_indices[j] = beta[j]!=0;
+    if(active_indices[j]!=last_active_indices[j]) active_changed = true;
     //inactive_indices[j] = !active_indices[j];
     total_active+=active_indices[j];
     //total_inactive+=inactive_indices[j];
   }
-  //MPI_Scatterv(active_indices,snp_node_sizes,snp_node_offsets,MPI_INT,active_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
-  //MPI_Scatterv(inactive_indices,snp_node_sizes,snp_node_offsets,MPI_INT,inactive_indices,variables,MPI_INT,0,MPI_COMM_WORLD);
-  for(int j=0;j<variables;++j){
-    //cerr<<"constrained beta check: rank: "<<mpi_rank<<": "<<j<<": "<<active_indices[j]<<endl;
-    //if(active_indices[j]) cerr<<"constrained beta check: rank: "<<mpi_rank<<": "<<j<<": "<<beta[j]<<endl;
-  }
+  MPI_Bcast(&active_changed,1,MPI_INT,0,MPI_COMM_WORLD);
+  if(active_changed && slave_id>=0) update_X_matrices();
+//  if(slave_id>=0) update_X_matrices();
 
 }
 
@@ -1012,8 +1070,9 @@ void iterative_hard_threshold_t::allocate_memory(){
   }else{
     current_top_k = config->cross_validate?config->top_k_max:config->best_k;
   }
-  this->last_BIC = 1e10;
+  
   // do some initializations
+  train_n = 0;
   for(int i=0;i<observations;++i) {
     Xbeta_full[i] = 0;
     if(config->cross_validate){
@@ -1023,7 +1082,19 @@ void iterative_hard_threshold_t::allocate_memory(){
     }else{
       mask_n[i] = 1;
     }
+    train_n+=mask_n[i];
   }
+  validation_n = observations-train_n;
+  if(slave_id>=0){
+    X_active_train = new float[train_n*current_top_k];
+    Xt_active_train = new float[current_top_k*train_n];
+    if(validation_n){
+      X_active_validate = new float[validation_n*current_top_k];
+      Xt_active_validate = new float[current_top_k*validation_n];
+    }
+  }
+
+  this->last_BIC = 1e10;
   proxmap_t::allocate_memory();
   if(mpi_rank==0){
    // random_access_geno = new random_access_t(config->bin_geno_file.data(),variables,observations);
@@ -1167,6 +1238,7 @@ float iterative_hard_threshold_t::compute_marginal_beta(float * xvec){
 }
 
 void iterative_hard_threshold_t::initialize(){
+  //if(mpi_rank==0)cerr<<"Calling initialize!\n";
 }
 
 bool iterative_hard_threshold_t::finalize_inner_iteration(){
@@ -1285,7 +1357,6 @@ void iterative_hard_threshold_t::iterate(){
   }
   if(!total_iterations){
   //if(logistic && !iter_rho_epsilon || !total_iterations){
-    cerr<<"Calling initialize!\n";
     //update_beta_landweber();
     if (slave_id>=0){
       float learning_rate = 2./(this->spectral_norm*this->spectral_norm);
@@ -1373,6 +1444,7 @@ float iterative_hard_threshold_t::evaluate_obj(){
   //MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   //MPI_Bcast(&residual,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   //MPI_Bcast(residuals,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
+  compute_xt_times_vector(residuals, negative_gradient);
 #endif
   return obj;
 }
