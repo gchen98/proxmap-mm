@@ -168,6 +168,7 @@ private:
   void update_X_matrices();
   bool run_landweber;
   void compute_X_active_train_vector(float * vector_p,float * vector_n);
+  void compute_X_active_validate_vector(float * vector_p,float * vector_n);
 
 };
 

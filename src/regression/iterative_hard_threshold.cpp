@@ -151,6 +151,32 @@ void iterative_hard_threshold_t::compute_x_times_vector(float * invec,int * mask
 #endif
 }
 
+void iterative_hard_threshold_t::compute_X_active_validate_vector(float * vector_p,float * vector_n){
+#ifdef USE_MPI
+  float temp_out[observations];
+  for(int i=0;i<observations;++i) temp_out[i] = 0;
+  if(total_active && slave_id>=0){
+     float temp_p[total_active];
+     float temp_n[validation_n];
+     int cur_var=0;
+     for(int j=0;j<variables;++j){
+       if(active_indices[j]) {
+         temp_p[cur_var]=vector_p[j];
+         //cerr<<"compute_x-active: "<<cur_var<<": "<<temp_p[cur_var]<<endl;
+         ++cur_var;
+       }
+     }
+     mmultiply(X_active_validate,validation_n,total_active,temp_p,1,temp_n);
+     int cur_obs = 0;
+     for(int i=0;i<observations;++i){
+       // for validation it is mask_n = 0
+       if(!mask_n[i]) temp_out[i] = temp_n[cur_obs++];
+     }
+  }
+  MPI_Reduce(temp_out,vector_n,observations,MPI_FLOAT,MPI_SUM,0,MPI_COMM_WORLD);
+  MPI_Bcast(vector_n,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
+#endif
+}
 
 void iterative_hard_threshold_t::compute_X_active_train_vector(float * vector_p,float * vector_n){
 #ifdef USE_MPI
@@ -1258,7 +1284,8 @@ bool iterative_hard_threshold_t::finalize_iteration(){
     for(int i=0;i<observations;++i) {
       Xbeta_old[i] = Xbeta_full[i];
     }
-    update_Xbeta(validation_mask,active_indices);
+    //update_Xbeta(validation_mask,active_indices);
+    compute_X_active_validate_vector(beta,Xbeta_full);
     float residual = 0;
     int n=0;
     for(int i=0;i<observations;++i){
@@ -1267,7 +1294,7 @@ bool iterative_hard_threshold_t::finalize_iteration(){
         if(logistic){
           float expvalue = 1./(1.+exp(-1.*Xbeta_full[i]));
           dev = (y[i]) == (expvalue>=.5);
-          //cerr<<i<<": "<<expvalue<<","<<(y[i])<<endl;
+          //cerr<<i<<": "<<expvalue<<","<<(y[i])<<" xbeta "<<Xbeta_full[i]<<endl;
         }else{
           dev = (y[i]-Xbeta_full[i]);
         }
