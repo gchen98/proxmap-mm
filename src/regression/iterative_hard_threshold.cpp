@@ -210,15 +210,12 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
   for(int i=0;i<observations;++i){
     Xbeta_old[i] = Xbeta_full[i];
   }
-  // Initialize X times negative gradient
-  float Xd[observations];
-  compute_X_active_train_vector(negative_gradient,Xd);
-  //compute_x_times_vector(negative_gradient,mask_n,active_indices,Xd,false);
 
   // compute the learning rate mu
   float mu = 0;
   int backtrack_iter = 0;
   int converged = false;
+  
   do{
     if(backtrack_iter){
       mu*=.5;
@@ -226,26 +223,53 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
         beta[j] = beta_old[j];
       }
     }else{
-      if(mpi_rank==0){
-        // compute mu
-        float mu1=0,mu2=0;
-        for(int j=0;j<variables;++j) {
-          mu1+=active_indices[j]?negative_gradient[j]*negative_gradient[j]:0;
+      if(!this->logistic){
+        // Initialize X times negative gradient
+        compute_X_active_train_vector(gradient,X_gradient);
+        //compute_x_times_vector(gradient,mask_n,active_indices,X_gradient,false);
+        if(mpi_rank==0){
+          // compute mu
+          float mu1=0,mu2=0;
+          for(int j=0;j<variables;++j) {
+            mu1+=active_indices[j]?gradient[j]*gradient[j]:0;
+          }
+          for(int i=0;i<observations;++i){
+            mu2+=mask_n[i]?X_gradient[i]*X_gradient[i]:0;
+           
+          }
+          mu = mu1/mu2;
+          if(config->verbose)cerr<<"Learning rate mu initialized to "<<mu<<" num is "<<mu1<<
+        " and denom is "<<mu2<<endl;
         }
+        MPI_Bcast(&mu,1,MPI_FLOAT,0,MPI_COMM_WORLD);
+      }else{ // logistic regression initial step size calculation
+        float tol = 1e-2;
+        mu = 0;
+        bool mu_converged = false;
+        float y2[observations];
         for(int i=0;i<observations;++i){
-          mu2+=mask_n[i]?Xd[i]*Xd[i]:0;
-         
+          y2[i] = y[i] - .5 -.5 * tanh(.5*Xbeta_full[i]);
         }
-        mu = mu1/mu2;
-        if(config->verbose)cerr<<"Learning rate mu initialized to "<<mu<<" num is "<<mu1<<
-      " and denom is "<<mu2<<endl;
+        compute_xt_times_vector(y2, log_gradient);
+        do{
+          float mu_old = mu;
+          compute_X_active_train_vector(log_gradient,X_log_gradient);
+          float d_mu=0,d2_mu=0;
+          for(int i=0;i<observations;++i){
+            d_mu += (y[i] - .5 - .5 * tanh(.5*Xbeta_full[i]+.5*mu*X_log_gradient[i]))*X_log_gradient[i];
+            d2_mu += (1. - tanh(.5*Xbeta_full[i]+.5*mu*X_log_gradient[i]) * tanh(.5*Xbeta_full[i]+.5*mu*X_log_gradient[i])) * X_log_gradient[i] * X_log_gradient[i]; 
+          }
+          mu = mu_old - (-1*d_mu) / (.25*d2_mu);
+          if(mpi_rank==0 && config->verbose)cerr<<"Step size for logistic regression mu is "<<mu<<endl;
+          mu_converged = fabs(mu - mu_old)<tol;
+        }while(!mu_converged); 
+               
       }
-      MPI_Bcast(&mu,1,MPI_FLOAT,0,MPI_COMM_WORLD);
     }
     // do beta and Xbeta update
     if(slave_id>=0){
       for(int j=0;j<variables;++j){
-        beta[j] = beta[j] + mu * negative_gradient[j];
+        beta[j] = beta[j] + mu * gradient[j];
       }
     }
     MPI_Gatherv(beta,variables,MPI_FLOAT,beta,snp_node_sizes,snp_node_offsets,MPI_FLOAT,0,MPI_COMM_WORLD);
@@ -457,7 +481,7 @@ void iterative_hard_threshold_t::update_beta_CG(){
 }
 
 void iterative_hard_threshold_t::update_X_matrices(){
-  cerr<<"validation_n "<<validation_n<<" train_n "<<train_n<<" total_active "<<total_active<<endl;
+  if(config->verbose)  cerr<<"validation_n "<<validation_n<<" train_n "<<train_n<<" total_active "<<total_active<<endl;
   if(!total_active) return;
   if(validation_n) {
     delete[] X_active_validate;
@@ -505,7 +529,7 @@ void iterative_hard_threshold_t::compute_xt_times_vector(float * in_vec, int * m
   //bool run_cpu = false; 
   //bool run_gpu = true;
   if(slave_id>=0){
-    bool benchmark = true;
+    bool benchmark = false;
     double start = clock();
     //cerr<<"At compute_xt_times_vec 2 with "<<variables<<" variables.\n";
     //bool debug_gpu = slave_id==0; 
@@ -1041,7 +1065,6 @@ void iterative_hard_threshold_t::allocate_memory(){
   active_indices = new int[variables];
   inactive_indices = new int[variables];
   this->last_residual = 1e10;
-  this->negative_gradient = new float[variables];
   this->residual = 0;
   this->temp_n = new float[observations];
   this->temp_p = new float[variables];
@@ -1057,7 +1080,10 @@ void iterative_hard_threshold_t::allocate_memory(){
   this->beta = new float[this->variables];
   this->beta_old = new float[this->variables];
   this->gradient = new float[this->variables];
-  this->beta_increment = new float[this->variables];
+  this->log_gradient = new float[variables];
+  this->X_gradient = new float[observations];
+  this->X_log_gradient = new float[observations];
+  //this->negative_gradient = new float[variables];
   this->XtXbeta = new float[this->variables];
   this->XtY = new float[this->variables];
   this->last_beta = new float[this->variables];
@@ -1151,7 +1177,9 @@ iterative_hard_threshold_t::~iterative_hard_threshold_t(){
   }
   delete[]residual_weights;
   delete[]A3x;
-  delete[] negative_gradient;
+  //delete[] negative_gradient;
+  //delete[] log_gradient;
+  //delete[] X_log_gradient;
   delete[]cg_residuals;
   delete[] cg_conjugate_vec;
   delete[]cg_Ap;
@@ -1180,6 +1208,9 @@ iterative_hard_threshold_t::~iterative_hard_threshold_t(){
   delete [] subject_node_sizes;
   delete [] subject_node_offsets;
   delete [] gradient;
+  delete [] log_gradient;
+  delete [] X_gradient;
+  delete [] X_log_gradient;
   delete [] beta_increment;
   delete [] beta;
   delete [] last_beta;
@@ -1467,11 +1498,11 @@ float iterative_hard_threshold_t::evaluate_obj(){
     //obj = loss + rho * this->map_distance;
     if(mpi_rank==0)cerr<<"EVALUATE_OBJ at iter "<<total_iterations<<": "<<obj<<endl;
   //}
+  compute_xt_times_vector(residuals, gradient);
   //gradient_weight = 1./sqrt(residual+1.);
   //MPI_Bcast(&obj,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   //MPI_Bcast(&residual,1,MPI_FLOAT,0,MPI_COMM_WORLD);
   //MPI_Bcast(residuals,observations,MPI_FLOAT,0,MPI_COMM_WORLD);
-  compute_xt_times_vector(residuals, negative_gradient);
 #endif
   return obj;
 }

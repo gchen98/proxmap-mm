@@ -70,11 +70,16 @@ private:
   float * residuals; // dimension dependent variable for outcome
   float * Xbeta_full;
   float * Xbeta_old;
-  float * negative_gradient;
+  //float * negative_gradient;
+  //float * log_gradient;
+  //float * X_log_gradient;
 
   float * means;
   float * precisions;
   float * gradient;
+  float * X_gradient;
+  float * log_gradient;
+  float * X_log_gradient;
   int * mask_n;
   int * mask_p;
 
