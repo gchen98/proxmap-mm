@@ -1,1 +1,3 @@
-Please refer to https://code.google.com/p/proxmap-mm/w/list for the latest documentation.
+Please refer to https://github.com/gchen98/proxmap-mm/blob/wiki/Intro.md for the latest documentation.
+
+
