@@ -223,7 +223,8 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
         beta[j] = beta_old[j];
       }
     }else{
-      if(!this->logistic){
+      //if(!this->logistic){
+      if(1==1){
         // Initialize X times negative gradient
         compute_X_active_train_vector(gradient,X_gradient);
         //compute_x_times_vector(gradient,mask_n,active_indices,X_gradient,false);
@@ -237,7 +238,7 @@ void iterative_hard_threshold_t::update_beta_iterative_hard_threshold(){
             mu2+=mask_n[i]?X_gradient[i]*X_gradient[i]:0;
            
           }
-          mu = mu1/mu2;
+          mu = 4*mu1/mu2;
           if(config->verbose)cerr<<"Learning rate mu initialized to "<<mu<<" num is "<<mu1<<
         " and denom is "<<mu2<<endl;
         }
