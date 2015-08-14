@@ -831,6 +831,10 @@ void iterative_hard_threshold_t::read_dataset(){
   this->mask_n = new int[observations];
   if(config->cross_validate){
     load_into_matrix(config->slice_file.data(),mask_n,observations,1);
+    float temp_out[observations];
+    // for validation it is mask_n = 0
+    for(int i=0;i<observations;++i) temp_out[i] = mask_n[i] ? 0 : y[i];
+    y_norm = get_norm(temp_out,observations);
   }
   //load_matrix_data(config->traitfile.data(),y,observations,1,sub_observations,1,subject_mask, single_mask,true,0);
   //load_random_access_data(random_access_pheno,y,1,observations,sub_observations,1,subject_mask, single_mask);
@@ -878,7 +882,9 @@ void iterative_hard_threshold_t::parse_fam_file(const char * infile, bool * mask
     for(int k=0;k<6;++k) iss>>token;
     float outcome;
     iss>>outcome;
-    if(outcome>0.0001 && outcome<.9999 || outcome<-0.0001 && outcome>-.9999)
+    float abs_outcome = fabs(outcome);
+    if((abs_outcome>0.001 && abs_outcome<.9999) || abs_outcome>1.0001)
+    //if(outcome>0.0001 && outcome<.9999 || outcome<-0.0001 && outcome>-.9999)
       decimal_found = true;
     if(mask[i]){
       newy[j] = outcome;
@@ -886,7 +892,7 @@ void iterative_hard_threshold_t::parse_fam_file(const char * infile, bool * mask
     }
   }
   this->logistic = !decimal_found;
-  //cerr<<"Logistic status: "<<this->logistic<<endl;
+  cerr<<"Logistic status: "<<this->logistic<<endl;
   ifs.close();
   
   
@@ -1303,39 +1309,58 @@ bool iterative_hard_threshold_t::finalize_inner_iteration(){
   return true;
 }
 
+float iterative_hard_threshold_t::get_norm(float * vec,int len){
+  float norm = 0;
+  for(int i=0;i<len;++i) norm+=fabs(vec[i]);
+  return norm;
+}
+
 bool iterative_hard_threshold_t::finalize_iteration(){
   int proceed = false; 
 #ifdef USE_MPI
   // compute current BIC
-  float validation_mse = 0;
+  float train_mse = 0,validation_mse = 0;
+  float xb_norm_validate = 0;
+  float xb_norm_train = 0;
   if(config->cross_validate){
     int validation_mask[observations];
     for(int i=0;i<observations;++i){
       validation_mask[i] = !mask_n[i];
     }
-    for(int i=0;i<observations;++i) {
-      Xbeta_old[i] = Xbeta_full[i];
-    }
-    //update_Xbeta(validation_mask,active_indices);
-    compute_X_active_validate_vector(beta,Xbeta_full);
-    float residual = 0;
-    int n=0;
+    float Xbeta_validate[observations];
+    compute_X_active_validate_vector(beta,Xbeta_validate);
+    xb_norm_validate = get_norm(Xbeta_validate,observations); 
+    xb_norm_train = get_norm(Xbeta_full,observations); 
+    float residual_train=0;
+    float residual_validate = 0;
     for(int i=0;i<observations;++i){
-      if(validation_mask[i]){
-        float dev = 0;
-        if(logistic){
-          float expvalue = 1./(1.+exp(-1.*Xbeta_full[i]));
-          dev = (y[i]) == (expvalue>=.5);
-          //cerr<<i<<": "<<expvalue<<","<<(y[i])<<" xbeta "<<Xbeta_full[i]<<endl;
+      float dev_train = 0;
+      float dev_validate = 0;
+      if(logistic){
+        if(validation_mask[i]){
+          float expvalue = 1./(1.+exp(-1.*Xbeta_validate[i]));
+          dev_validate = (y[i]) == (expvalue>=.5);
         }else{
-          dev = (y[i]-Xbeta_full[i]);
+          float expvalue = 1./(1.+exp(-1.*Xbeta_full[i]));
+          dev_train = (y[i]) == (expvalue>=.5);
         }
-        residual+=dev*dev;
-        ++n;
+      }else{
+          //cerr<<i<<": "<<expvalue<<","<<(y[i])<<" xbeta "<<Xbeta_full[i]<<endl;
+        if(validation_mask[i]){
+          //dev_validate = (y[i]-Xbeta_validate[i]);
+          dev_validate = (y[i]-Xbeta_validate[i]/xb_norm_validate);
+        }else{
+          // we want to normalize Xbeta in case Y was scaled differently.
+          //dev_train = (y[i]-Xbeta_full[i]);
+          dev_train = (y[i]-Xbeta_full[i]/xb_norm_train);
+        }
       }
+      residual_train+=dev_train*dev_train;
+      residual_validate+=dev_validate*dev_validate;
     }
-    validation_mse=logistic?1.-(residual/n):residual/n;
-    for(int i=0;i<observations;++i) Xbeta_full[i] = Xbeta_old[i];
+    train_mse=logistic?1.-(residual_train):residual_train;
+    validation_mse=logistic?1.-(residual_validate):residual_validate;
+    //for(int i=0;i<observations;++i) Xbeta_full[i] = Xbeta_old[i];
   }
   
   if(mpi_rank==0){
@@ -1372,7 +1397,7 @@ bool iterative_hard_threshold_t::finalize_iteration(){
     if (top_k_finalized){
       //ostringstream oss;
       if(config->cross_validate){
-        cout<<"SLICE "<<config->slice_file<<"\tK "<<current_top_k<<"\tVALIDATION_MSE "<<validation_mse<<endl;
+        cout<<"SLICE "<<config->slice_file<<"\tK "<<current_top_k<<"\tTRAINING_MSE "<<train_mse<<"\t(NORM"<<xb_norm_train<<")\tVALIDATION_MSE "<<validation_mse<<"\t(NORM"<<xb_norm_validate<<")"<<endl;
         if(logistic) ++this->current_top_k;
         else --this->current_top_k;
       }else{

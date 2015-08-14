@@ -106,6 +106,8 @@ private:
   float * constrained_beta;// variable dimension depending on node
   float gradient_weight;
   float frobenius_norm;
+  // these norms are computed for the validation portion of the data
+  float y_norm, xb_norm;
 
   // model selection containers
   float * grid_bic;
@@ -133,6 +135,7 @@ private:
   int subject_chunks; // for SNP major
   int snp_chunks; // for subject major
 
+  float get_norm(float * vec,int len);
   void parse_config_line(string & key, istringstream & iss);
   void read_dataset();
   inline float c2g(char c,int shifts);
